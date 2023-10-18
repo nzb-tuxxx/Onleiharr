@@ -2,6 +2,8 @@ Onleiharr
 =========
 Onleiharr is a simple daemon designed to periodically monitor the availability of media on the Onleihe website and notify the user of new media additions. This tool can be especially useful for staying updated when new books or magazines are added to your Onleihe library.
 
+![Onleiharr Telegram Notification](images/onleiharr_telegram.jpg)
+
 Setup
 -----
 1. **Install Dependencies**:
