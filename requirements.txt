@@ -1,0 +1,3 @@
+apprise
+beautifulsoup4
+requests
