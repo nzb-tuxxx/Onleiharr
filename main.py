@@ -50,10 +50,15 @@ while True:
     else:
         new_media = current_media - known_media
         for media in new_media:
+            if media.available:
+                availability_message = 'available'
+            else:
+                availability_message = f'rented until <b>{media.availability_date}</b>'
+
             if isinstance(media, Book):
-                notify_message = f"[{media.format.upper()}] {media.author} - {media.title}: {media.full_url}"
+                notify_message = f'[{media.format.upper()}] <a href="{media.full_url}">{media.author} - {media.title}</a> {availability_message}'
             elif isinstance(media, Magazine):
-                notify_message = f"[MAGAZINE] {media.title}: {media.full_url}"
+                notify_message = f'[MAGAZINE] <a href="{media.full_url}">{media.title}</a> {availability_message}'
 
             print(notify_message)
             apobj.notify(

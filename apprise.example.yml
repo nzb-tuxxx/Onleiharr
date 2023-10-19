@@ -4,4 +4,4 @@
 
 # Define your URLs
 urls:
-  - tgram://{bot_token}/{chat_id}/
+  - tgram://{bot_token}/{chat_id}/?format=html
