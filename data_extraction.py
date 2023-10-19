@@ -4,32 +4,33 @@ from bs4 import BeautifulSoup
 from dataclasses import dataclass
 from datetime import datetime, date
 
-BASE_URL = "https://www.onleihe.de/nbib24/frontend/"
-
 
 @dataclass
 class Media(ABC):
     link: str
     title: str
-    format: str  # 'audio', 'ebook', 'magazine'
+    format: str  # 'audio', 'ebook', 'emagazine'
+    library: str
     available: bool
     availability_date: date
 
     @property
     def full_url(self):
-        return BASE_URL + self.link
+        return f"https://www.onleihe.de/{self.library}/frontend/{self.link}"
+
 
 @dataclass
 class Book(Media):
     author: str
     description: str
-    insert_date: datetime.date
+    insert_date: date
 
     def __hash__(self):
         return hash((self.author, self.title))
 
     def __eq__(self, other):
         return self.author == other.author and self.title == other.title
+
 
 @dataclass
 class Magazine(Media):
@@ -40,7 +41,7 @@ class Magazine(Media):
         return self.title == other.title
 
 
-def extract_book_info(book_element: BeautifulSoup) -> Book:
+def extract_book_info(book_element: BeautifulSoup, library: str) -> Book:
     author_element = book_element.find('p', {'test-id': 'cardAuthor'})
     author = author_element.text.strip().replace('\xa0', ' ')
 
@@ -70,10 +71,10 @@ def extract_book_info(book_element: BeautifulSoup) -> Book:
         availability_date = date.today()
         available = True
 
-    return Book(link, title, book_format, available, availability_date, author, description, insert_date)
+    return Book(link, title, book_format, library, available, availability_date, author, description, insert_date)
 
 
-def extract_magazine_info(magazine_element: BeautifulSoup) -> Magazine:
+def extract_magazine_info(magazine_element: BeautifulSoup, library: str) -> Magazine:
     title_element = magazine_element.find('h3', {'test-id': 'cardTitle'})
     title = title_element.text.strip()
 
@@ -90,12 +91,14 @@ def extract_magazine_info(magazine_element: BeautifulSoup) -> Magazine:
         availability_date = datetime.strptime(availability_date_str, '%d.%m.%Y').date()
         available = False
 
-    return Magazine(link, title, 'emagazine', available, availability_date)
+    return Magazine(link, title, 'emagazine', library, available, availability_date)
 
 
 def get_media_from_onleihe(url: str):
     response = requests.get(url)
     response.raise_for_status()
+
+    library = url.split('/')[3]
 
     soup = BeautifulSoup(response.content, 'html.parser')
     media_containers = soup.find_all('div', class_='card')
@@ -103,8 +106,8 @@ def get_media_from_onleihe(url: str):
     media = set()
     for container in media_containers:
         if container.find('p', {'test-id': 'cardAuthor'}):
-            media.add(extract_book_info(container))
+            media.add(extract_book_info(container, library))
         else:
-            media.add(extract_magazine_info(container))
+            media.add(extract_magazine_info(container, library))
 
     return media
