@@ -81,7 +81,7 @@ def extract_magazine_info(magazine_element: BeautifulSoup, library: str) -> Maga
     link_element = magazine_element.find('a', {'test-id': 'mediaInfoLink'})
     link = link_element['href']
 
-    availability_date_element = magazine_element.find('small', {'test-id': 'cardAvailability'}).text.strip()
+    availability_date_element = magazine_element.select_one('[test-id="cardAvailability"]').text.strip()
 
     if "Verfügbar" in availability_date_element:
         availability_date = date.today()

@@ -32,8 +32,8 @@ while True:
             current_media.update(media_from_url)
         except RequestException as e:
             print(f"Network error while processing url {url}: {e}")
-        except Exception as e:
-            print(f"Unhandled exception: {e}")
+        # except Exception as e:
+        #    print(f"Unhandled exception: {e}")
 
     if first_run:
         print("First run, populating cache...")
