@@ -3,13 +3,13 @@
 Onleiharr provides a set of tools to automate monitoring, notification, and renting of media from the Onleihe website.
 
 ## Overview
-Onleiharr allows users to monitor specific URLs on the Onleihe website, receive notifications when new media is available, and automatically rent media based on predefined criteria.
+Onleiharr allows users to monitor specific URLs on the Onleihe website, receive notifications when new media is available, and automatically rent media based on predefined keywords.
 
 ## Features
 - **Automatic Login**: Logs in to the Onleihe website using the provided credentials.
 - **URL Monitoring**: Continuously checks specified URLs for new media.
 - **Notifications**: Sends notifications for new media availability using Apprise.
-- **Automatic Renting**: Rents media based on titles specified in `auto_rent_criteria.txt`.
+- **Automatic Renting**: Rents media based on titles specified in `auto_rent_keywords.txt`.
 
 ## Installation and Setup
 1. Install the required Python packages:
@@ -24,7 +24,7 @@ The `config.ini` file contains several sections:
 
 **[GENERAL]**:
   - `poll_interval_secs`: Interval in seconds between consecutive checks of the Onleihe URLs.
-  - `auto_rent_criteria_path`: Path to the text file containing part of the titles of media to be auto-rented.
+  - `auto_rent_keywords_path`: Path to the text file containing part of the titles of media to be auto-rented.
   
 **[NOTIFICATION]**:
   - `apprise_config_path`: Path to the Apprise configuration file for notifications.
@@ -41,7 +41,7 @@ The `config.ini` file contains several sections:
 
 ## Usage
 1. Setup `config.ini` and `apprise.yml` to your needs.
-2. Specify titles of media you want to auto-rent in `auto_rent_criteria.txt`.
+2. Specify titles of media you want to auto-rent in `auto_rent_keywords.txt`.
 3. Run the `main.py` script.
 
 ## License

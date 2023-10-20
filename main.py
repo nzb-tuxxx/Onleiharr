@@ -11,7 +11,7 @@ config.read('config.ini')
 
 # Get options from config
 poll_interval_secs = config.getfloat('GENERAL', 'poll_interval_secs')
-auto_rent_criteria_path = config['GENERAL']['auto_rent_criteria_path']
+auto_rent_keywords_path = config['GENERAL']['auto_rent_keywords_path']
 
 apprise_config_path = config.get('NOTIFICATION', 'apprise_config_path')
 test_notification = config.getboolean('NOTIFICATION', 'test_notification')
@@ -24,9 +24,9 @@ library = config['ONLEIHE-CREDENTIALS']['library']
 library_id = int(config['ONLEIHE-CREDENTIALS']['library-id'])
 
 # Load auto rent filters
-with open(auto_rent_criteria_path, 'r') as file:
-    auto_rent_filter = tuple(line.strip() for line in file if not line.strip().startswith('#'))
-print(f'{auto_rent_filter=}')
+with open(auto_rent_keywords_path, 'r') as file:
+    auto_rent_keywords = tuple(line.strip() for line in file if not line.strip().startswith('#'))
+print(f'{auto_rent_keywords=}')
 
 # Setup Onleihe
 onleihe = Onleihe(library=library, library_id=library_id, username=username, password=password)
@@ -39,8 +39,9 @@ apobj.add(config_apprise)
 
 
 def matches_filter(title, filters):
+    title_lower = title.lower()
     for filter_entry in filters:
-        if filter_entry in title:
+        if filter_entry.lower() in title_lower:
             return True
     return False
 
@@ -76,7 +77,7 @@ while True:
         auto_rent = False
         new_media = current_media - known_media
         for media in new_media:
-            if matches_filter(media.title, auto_rent_filter):
+            if matches_filter(media.title, auto_rent_keywords):
                 print(f'{media.title} matches filter')
                 if media.available:
                     print(f'{media.title} is available, trying auto rent')

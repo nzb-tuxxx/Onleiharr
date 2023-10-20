@@ -162,4 +162,4 @@ cython_debug/
 # Onleiharr
 apprise.yml
 config.ini
-auto_rent_criteria.txt
+auto_rent_keywords.txt
