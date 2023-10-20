@@ -2,6 +2,7 @@ import apprise
 import configparser
 import time
 from data_extraction import get_media_from_onleihe, Book, Magazine
+from onleihe import Onleihe
 from requests.exceptions import RequestException
 
 # Load configuration from config.ini
@@ -10,15 +11,39 @@ config.read('config.ini')
 
 # Get options from config
 poll_interval_secs = config.getfloat('GENERAL', 'poll_interval_secs')
+auto_rent_criteria_path = config['GENERAL']['auto_rent_criteria_path']
+
 apprise_config_path = config.get('NOTIFICATION', 'apprise_config_path')
 test_notification = config.getboolean('NOTIFICATION', 'test_notification')
-urls = dict(config['ONLEIHE'])
+
+urls = dict(config['ONLEIHE-URLS'])
+
+username = config['ONLEIHE-CREDENTIALS']['username']
+password = config['ONLEIHE-CREDENTIALS']['password']
+library = config['ONLEIHE-CREDENTIALS']['library']
+library_id = int(config['ONLEIHE-CREDENTIALS']['library-id'])
+
+# Load auto rent filters
+with open(auto_rent_criteria_path, 'r') as file:
+    auto_rent_filter = tuple(line.strip() for line in file if not line.strip().startswith('#'))
+print(f'{auto_rent_filter=}')
+
+# Setup Onleihe
+onleihe = Onleihe(library=library, library_id=library_id, username=username, password=password)
 
 # Create an Apprise instance
 apobj = apprise.Apprise()
 config_apprise = apprise.AppriseConfig()
 config_apprise.add(apprise_config_path)
 apobj.add(config_apprise)
+
+
+def matches_filter(title, filters):
+    for filter_entry in filters:
+        if filter_entry in title:
+            return True
+    return False
+
 
 known_media = set()
 first_run = True
@@ -48,9 +73,19 @@ while True:
             known_media.remove(random_media)
             print(f"Removed media '{random_media.title}' from known_media for notification test")
     else:
+        auto_rent = False
         new_media = current_media - known_media
         for media in new_media:
-            if media.available:
+            if matches_filter(media.title, auto_rent_filter):
+                print(f'{media.title} matches filter')
+                if media.available:
+                    print(f'{media.title} is available, trying auto rent')
+                    onleihe.rent_media(media)
+                    auto_rent = True
+
+            if auto_rent:
+                availability_message = 'auto rented :)'
+            elif media.available:
                 availability_message = 'available'
             else:
                 availability_message = f'rented until <b>{media.availability_date}</b>'

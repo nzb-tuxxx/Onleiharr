@@ -159,6 +159,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 
-# Onleiharr config
+# Onleiharr
 apprise.yml
 config.ini
+auto_rent_criteria.txt
