@@ -25,7 +25,7 @@ library_id = int(config['ONLEIHE-CREDENTIALS']['library-id'])
 
 # Load auto rent filters
 with open(auto_rent_keywords_path, 'r') as file:
-    auto_rent_keywords = tuple(line.strip() for line in file if not line.strip().startswith('#'))
+    auto_rent_keywords = set(line.strip() for line in file if not line.strip().startswith('#'))
 print(f'{auto_rent_keywords=}')
 
 # Setup Onleihe
@@ -40,10 +40,7 @@ apobj.add(config_apprise)
 
 def matches_filter(title, filters):
     title_lower = title.lower()
-    for filter_entry in filters:
-        if filter_entry.lower() in title_lower:
-            return True
-    return False
+    return any(filter_entry.lower() in title_lower for filter_entry in filters)
 
 
 known_media = set()
@@ -92,10 +89,9 @@ while True:
                 availability_message = f'rented until <b>{media.availability_date}</b>'
 
             if isinstance(media, Book):
-                notify_message = f'[{media.format.upper()}] <a href="{media.full_url}">{media.author} - {media.title}</a> {availability_message}'
+                notify_message = f'[{media.format.upper()}] <b><a href="{media.full_url}">{media.title} - {media.author}</a></b> {availability_message}'
             elif isinstance(media, Magazine):
-                notify_message = f'[MAGAZINE] <a href="{media.full_url}">{media.title}</a> {availability_message}'
-
+                notify_message = f'[MAGAZINE] <b><a href="{media.full_url}">{media.title}</a></b> {availability_message}'
             print(notify_message)
             apobj.notify(
                 title='Onleihe: New media',
