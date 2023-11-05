@@ -71,22 +71,21 @@ while True:
             known_media.remove(random_media)
             print(f"Removed media '{random_media.title}' from known_media for notification test")
     else:
-        auto_rent = False
         new_media = current_media - known_media
         for media in new_media:
+            auto_rent = False
             if matches_filter(media.title, auto_rent_keywords):
                 print(f'{media.title} matches filter')
                 if media.available:
                     print(f'{media.title} is available, trying auto rent')
                     onleihe.rent_media(media)
                     auto_rent = True
-
             if auto_rent:
                 availability_message = 'auto rented :)'
             elif media.available:
                 availability_message = 'available'
             else:
-                availability_message = f'rented until <b>{media.availability_date}</b>'
+                availability_message = f'not available until <b>{media.availability_date}</b>'
 
             if isinstance(media, Book):
                 notify_message = f'[{media.format.upper()}] <b><a href="{media.full_url}">{media.title} - {media.author}</a></b> {availability_message}'

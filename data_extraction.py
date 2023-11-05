@@ -52,7 +52,10 @@ def extract_book_info(book_element: BeautifulSoup, library: str) -> Book:
     link = link_element['href']
 
     description_element = book_element.find('p', {'test-id': 'cardAbstract'})
-    description = description_element.text.strip().replace('\xa0', ' ')
+    if description_element:
+        description = description_element.text.strip().replace('\xa0', ' ')
+    else:
+        description = None
 
     date_element = book_element.find('small', {'test-id': 'cardInsertDate'}).find('span')
     insert_date_str = date_element.text.strip()
@@ -94,8 +97,8 @@ def extract_magazine_info(magazine_element: BeautifulSoup, library: str) -> Maga
     return Magazine(link, title, 'emagazine', library, available, availability_date)
 
 
-def get_media_from_onleihe(url: str):
-    response = requests.get(url)
+def get_media_from_onleihe(url: str, timeout: int = 10):
+    response = requests.get(url, timeout=timeout)
     response.raise_for_status()
 
     library = url.split('/')[3]

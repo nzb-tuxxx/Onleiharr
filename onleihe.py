@@ -14,20 +14,21 @@ class RentError(Exception):
 
 
 class Onleihe:
-    def __init__(self, library: str, library_id: int, username: str, password: str):
+    def __init__(self, library: str, library_id: int, username: str, password: str, timeout: int = 10):
         # Create a session to be used for all requests
         self.library = library
         self.library_id = library_id
         self.username = username
         self.password = password
         self.session = requests.Session()
+        self.timeout = timeout
 
     def login(self):
         # URL of the page with the login form
         url = f'https://www.onleihe.de/{self.library}/frontend/login,0-0-0-800-0-0-0-0-0-0-0.html?libraryId={self.library_id}'
 
         # Step 1: Fetch the page
-        response = self.session.get(url)
+        response = self.session.get(url, timeout=self.timeout)
         response.raise_for_status()  # Ensure the request was successful
 
         # Step 2: Parse the HTML and extract form information
@@ -75,7 +76,7 @@ class Onleihe:
             'pLendPeriod': str(lend_period)
         }
 
-        response = self.session.post(rent_url, data=data)
+        response = self.session.post(rent_url, data=data, timeout=self.timeout)
         response.raise_for_status()
 
         # Check for errors in response
