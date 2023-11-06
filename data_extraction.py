@@ -105,8 +105,10 @@ def extract_magazine_info(magazine_element: BeautifulSoup, library: str) -> Maga
     return Magazine(link, title, 'emagazine', library, available, availability_date)
 
 
-def get_media_from_onleihe(url: str, timeout: int = 10):
-    response = requests.get(url, timeout=timeout)
+def get_media_from_onleihe(url: str, elements: int = 50, timeout: int = 10):
+    data = {'elementsPerPage': str(elements)}
+
+    response = requests.post(url, data=data, timeout=timeout)
     response.raise_for_status()
 
     library = url.split('/')[3]
