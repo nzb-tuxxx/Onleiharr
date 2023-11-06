@@ -18,6 +18,10 @@ class Media(ABC):
     def full_url(self):
         return f"https://www.onleihe.de/{self.library}/frontend/{self.link}"
 
+    @property
+    def id(self):
+        return int(self.link.split('-')[2])
+
 
 @dataclass
 class Book(Media):
@@ -26,19 +30,23 @@ class Book(Media):
     insert_date: date
 
     def __hash__(self):
-        return hash((self.author, self.title))
+        return hash(self.id)
 
     def __eq__(self, other):
-        return self.author == other.author and self.title == other.title
+        if not isinstance(other, Media):
+            return NotImplemented
+        return self.id == other.id
 
 
 @dataclass
 class Magazine(Media):
     def __hash__(self):
-        return hash(self.title)
+        return hash(self.id)
 
     def __eq__(self, other):
-        return self.title == other.title
+        if not isinstance(other, Media):
+            return NotImplemented
+        return self.id == other.id
 
 
 def extract_book_info(book_element: BeautifulSoup, library: str) -> Book:
@@ -106,11 +114,8 @@ def get_media_from_onleihe(url: str, timeout: int = 10):
     soup = BeautifulSoup(response.content, 'html.parser')
     media_containers = soup.find_all('div', class_='card')
 
-    media = set()
     for container in media_containers:
         if container.find('p', {'test-id': 'cardAuthor'}):
-            media.add(extract_book_info(container, library))
+            yield extract_book_info(container, library)
         else:
-            media.add(extract_magazine_info(container, library))
-
-    return media
+            yield extract_magazine_info(container, library)

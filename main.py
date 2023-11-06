@@ -15,6 +15,7 @@ auto_rent_keywords_path = config['GENERAL']['auto_rent_keywords_path']
 
 apprise_config_path = config.get('NOTIFICATION', 'apprise_config_path')
 test_notification = config.getboolean('NOTIFICATION', 'test_notification')
+email = config.get('NOTIFICATION', 'email', fallback=None)
 
 urls = dict(config['ONLEIHE-URLS'])
 
@@ -74,14 +75,21 @@ while True:
         new_media = current_media - known_media
         for media in new_media:
             auto_rent = False
+            auto_reserve = False
             if matches_filter(media.title, auto_rent_keywords):
                 print(f'{media.title} matches filter')
                 if media.available:
                     print(f'{media.title} is available, trying auto rent')
                     onleihe.rent_media(media)
                     auto_rent = True
+                else:
+                    print(f'{media.title} is unavailable, trying to reserve')
+                    onleihe.reserve_media(media, email)
+                    auto_reserve = True
             if auto_rent:
                 availability_message = 'auto rented :)'
+            elif auto_reserve:
+                availability_message = f'auto reserved - available at <b>{media.availability_date}</b>'
             elif media.available:
                 availability_message = 'available'
             else:

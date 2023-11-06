@@ -13,6 +13,11 @@ class RentError(Exception):
     pass
 
 
+class ReserveError(Exception):
+    """Exception raised when reserving a media fails."""
+    pass
+
+
 class Onleihe:
     def __init__(self, library: str, library_id: int, username: str, password: str, timeout: int = 10):
         # Create a session to be used for all requests
@@ -67,12 +72,10 @@ class Onleihe:
         if login:
             self.login()
 
-        # Get the version ID from the media link
-        version_id = media.link.split('-')[2]
-        rent_url = f"https://www.onleihe.de/{self.library}/frontend/mediaLend,0-0-{version_id}-303-0-0-0-0-0-0-0.html"
+        rent_url = f"https://www.onleihe.de/{self.library}/frontend/mediaLend,0-0-{media.id}-303-0-0-0-0-0-0-0.html"
 
         data = {
-            'pVersionId': version_id,
+            'pVersionId': str(media.id),
             'pLendPeriod': str(lend_period)
         }
 
@@ -85,5 +88,30 @@ class Onleihe:
                                   string="Ein unerwarteter Fehler ist aufgetreten! Bitte versuchen Sie es später noch einmal.")
         if error_message:
             raise RentError("An unexpected error occurred while trying to rent the media. Please try again later.")
+
+        return response.text
+
+    def reserve_media(self, media: Media, email: str = None, login: bool = True):
+        if login:
+            self.login()
+
+        reserve_url = f"https://www.onleihe.de/{self.library}/frontend/mediaReserve,0-0-0-1003-0-0-0-0-0-0-0.html"
+
+        data = {
+            'mvId': str(media.id),
+        }
+        if email:
+            data['pRecipient'] = email
+            data['pConfirmedRecipient'] = email
+
+        response = self.session.post(reserve_url, data=data, timeout=self.timeout)
+        response.raise_for_status()
+
+        # Check for errors in response
+        soup = BeautifulSoup(response.text, 'html.parser')
+        error_message = soup.find('p', class_='text-center mb-0',
+                                  string="Ein unerwarteter Fehler ist aufgetreten! Bitte versuchen Sie es später noch einmal.")
+        if error_message:
+            raise ReserveError("An unexpected error occurred while trying to reserve the media. Please try again later.")
 
         return response.text
