@@ -1,6 +1,20 @@
 import requests
 from bs4 import BeautifulSoup
 from data_extraction import Media
+from functools import wraps
+
+
+def handle_exceptions(exception_types=(Exception,), default_value=None):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except exception_types as e:
+                print(f"An error of type {type(e).__name__} occurred: {e}")
+                return default_value
+        return wrapper
+    return decorator
 
 
 class LoginError(Exception):
@@ -28,6 +42,7 @@ class Onleihe:
         self.session = requests.Session()
         self.timeout = timeout
 
+    @handle_exceptions(exception_types=(requests.RequestException, LoginError))
     def login(self):
         # URL of the page with the login form
         url = f'https://www.onleihe.de/{self.library}/frontend/login,0-0-0-800-0-0-0-0-0-0-0.html?libraryId={self.library_id}'
@@ -68,6 +83,7 @@ class Onleihe:
         # Return the response
         return response_post.text
 
+    @handle_exceptions(exception_types=(requests.RequestException, RentError))
     def rent_media(self, media: Media, lend_period: int = 2, login: bool = True):
         if login:
             self.login()
@@ -91,6 +107,7 @@ class Onleihe:
 
         return response.text
 
+    @handle_exceptions(exception_types=(requests.RequestException, ReserveError))
     def reserve_media(self, media: Media, email: str = None, login: bool = True):
         if login:
             self.login()
