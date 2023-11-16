@@ -25,7 +25,7 @@ class Media(ABC):
 
 @dataclass
 class Book(Media):
-    author: str
+    _author: str
     description: str
     insert_date: date
 
@@ -36,6 +36,14 @@ class Book(Media):
         if not isinstance(other, Media):
             return NotImplemented
         return self.id == other.id
+
+    @property
+    def author(self):
+        return self._author.replace("\n", " ")
+
+    @author.setter
+    def author(self, value):
+        self._author = value
 
 
 @dataclass
