@@ -1,6 +1,6 @@
 # Onleiharr
 
-Onleiharr provides a set of tools to automate monitoring, notification, and renting of media from the Onleihe website.
+![Telegram Notification](images/onleiharr_telegram.jpg)
 
 ## Overview
 Onleiharr allows users to monitor specific URLs on the Onleihe website, receive notifications when new media is available, and automatically rent or reserve media based on predefined keywords.
