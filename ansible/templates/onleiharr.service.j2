@@ -1,0 +1,15 @@
+[Unit]
+Description=Onleiharr Service
+After=network.target
+
+[Service]
+Type=simple
+User=onleiharr
+ExecStart=/usr/bin/python3 {{ project_path }}/main.py
+WorkingDirectory={{ project_path }}
+Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+

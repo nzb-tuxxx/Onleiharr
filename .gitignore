@@ -163,3 +163,4 @@ cython_debug/
 apprise.yml
 config.ini
 auto_rent_keywords.txt
+external_vars.yml

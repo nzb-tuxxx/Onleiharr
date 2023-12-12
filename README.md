@@ -45,6 +45,15 @@ The `config.ini` file contains several sections:
 2. Specify titles of media you want to auto-rent in `auto_rent_keywords.txt`.
 3. Run the `main.py` script.
 
+### Docker Deployment
+1. build container using `docker build -t onleiharr .`
+2. make sure all config files exists in current host folder (auto_rent_keywords.txt, apprise.yml and config.ini)
+3. start docker container using ` docker run -v $(pwd)/apprise.yml:/app/apprise.yml -v $(pwd)/config.ini:/app/config.ini -v $(pwd)/auto_rent_keywords.txt:/app/auto_rent_keywords.txt onleiharr`
+
+### Ansible Deployment
+1. modify your vars based on ansible/onleiharr.yaml in ansible/vars/external_vars.yml 
+2. run the playbook on your inventory `ansible-playbook -i your_inventory ansible/onleiharr.yaml`
+
 ## License
 
 This project is licensed under the MIT License.

@@ -1,0 +1,6 @@
+{% for section, options in config_settings.items() %}
+[{{ section }}]
+{% for key, value in options.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
+{% endfor %}

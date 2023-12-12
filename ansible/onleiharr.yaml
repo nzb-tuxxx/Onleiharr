@@ -1,0 +1,100 @@
+---
+- name: Install Onleiharr Project
+  hosts: onleiharr
+  become: yes
+  vars:
+    git_repo: "https://github.com/nzb-tuxxx/Onleiharr.git"
+    project_path: "/usr/src/Onleiharr"
+    telegram_bot_token: "BotToken"
+    telegram_chat_id: "ChatID"
+    config_settings:
+      GENERAL:
+        poll_interval_secs: 60
+        auto_rent_keywords_path: "{{ project_path }}/auto_rent_keywords.txt"
+      NOTIFICATION:
+        apprise_config_path: "{{ project_path }}/apprise.yml"
+        test_notification: "False"
+        email: "email@example.com"
+      ONLEIHE-CREDENTIALS:
+        username: "Benutzername"
+        password: "Passwort"
+        library: "Bibliotheksname"
+        library-id: "123456"
+      ONLEIHE-URLS:
+        url-name: "https://www.onleihe.de/bib/frontend/mediaList,xxxxx="
+    auto_rent_keywords:
+      - "Keyword1"
+      - "Keyword2"
+      - "Keyword3"
+  vars_files:
+    - vars/external_vars.yml
+
+
+  tasks:
+    - name: Create a new user 'onleiharr'
+      user:
+        name: onleiharr
+        system: yes
+        create_home: no
+
+    - name: Ensure git, python and pip are installed
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - python3
+        - python3-pip
+
+    - name: Clone the Onleiharr Git repository
+      git:
+        repo: "{{ git_repo }}"
+        dest: "{{ project_path }}"
+        version: main
+        force: true
+      notify:
+        - restart onleiharr service
+
+    - name: Install Python dependencies
+      pip:
+        requirements: "{{ project_path }}/requirements.txt"
+
+    - name: Generate config.ini from template
+      template:
+        src: config_ini.j2
+        dest: "{{ project_path }}/config.ini"
+      notify:
+        - restart onleiharr service
+
+    - name: Generate apprise.yml from template
+      template:
+        src: apprise.yml.j2
+        dest: "{{ project_path }}/apprise.yml"
+      notify:
+        - restart onleiharr service
+
+    - name: Create auto_rent_keywords.txt from list
+      copy:
+        content: "{{ auto_rent_keywords | join('\n') }}"
+        dest: "{{ project_path }}/auto_rent_keywords.txt"
+      notify:
+        - restart onleiharr service
+
+    - name: Create a systemd service for Onleiharr
+      template:
+        src: templates/onleiharr.service.j2
+        dest: /etc/systemd/system/onleiharr.service
+      notify:
+        - reload systemd
+        - restart onleiharr service
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart onleiharr service
+      systemd:
+        name: onleiharr
+        state: restarted
+        enabled: yes
