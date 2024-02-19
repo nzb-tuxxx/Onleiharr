@@ -105,6 +105,9 @@ def extract_magazine_info(magazine_element: BeautifulSoup, library: str) -> Maga
     if "Verfügbar" in availability_date_element:
         availability_date = date.today()
         available = True
+    elif "Ausgeliehen" in availability_date_element:
+        availability_date = date(1970, 1, 1)
+        available = False
     else:
         availability_date_str = availability_date_element.split('Voraussichtlich verfügbar ab:\xa0')[-1].strip()
         availability_date = datetime.strptime(availability_date_str, '%d.%m.%Y').date()
