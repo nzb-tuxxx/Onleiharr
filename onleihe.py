@@ -4,15 +4,19 @@ from data_extraction import Media
 from functools import wraps
 
 
-def handle_exceptions(exception_types=(Exception,), default_value=None):
+def handle_exceptions(exception_types=(Exception,), default_value=None, max_retries=3):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except exception_types as e:
-                print(f"An error of type {type(e).__name__} occurred: {e}")
-                return default_value
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exception_types as e:
+                    if attempt < max_retries:
+                        print(f"Attempt {attempt + 1} failed: {type(e).__name__} - {e}. Retrying...")
+                    else:
+                        print(f"All {max_retries} attempts failed. Returning default value.")
+            return default_value
         return wrapper
     return decorator
 
