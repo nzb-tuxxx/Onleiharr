@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=65", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onleiharr"
+dynamic = ["version"]
+description = "Onleihe watcher with notifications and auto-rent"
+authors = [{ name = "Onleiharr Maintainers" }]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+  "apprise",
+  "beautifulsoup4",
+  "requests",
+  "tomli; python_version < '3.11'",
+]
+keywords = ["onleiharr", "onleihe"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Intended Audience :: End Users/Desktop",
+  "Environment :: Console",
+]
+[project.urls]
+Homepage = "https://github.com/nzb-tuxxx/Onleiharr"
+Repository = "https://github.com/nzb-tuxxx/Onleiharr"
+Issues = "https://github.com/nzb-tuxxx/Onleiharr/issues"
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "no-local-version"
+write_to = "onleiharr/_version.py"
+
+[project.scripts]
+onleiharr = "onleiharr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["onleiharr"]

@@ -1,7 +1,0 @@
-#
-# Apprise Minimal Configuration Example
-#
-
-# Define your URLs
-urls:
-  - tgram://{bot_token}/{chat_id}/?format=html

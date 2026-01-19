@@ -3,63 +3,103 @@
 ![Telegram Notification](images/onleiharr_telegram.jpg)
 
 ## Overview
-Onleiharr allows users to monitor specific URLs on the Onleihe website, receive notifications when new media is available, and automatically rent or reserve media based on predefined keywords.
+Onleiharr monitors specific Onleihe URLs, sends notifications for new media, and can auto-rent or reserve based on keyword filters.
 
-## Features
-- **Automatic Login**: Logs in to the Onleihe website using the provided credentials.
-- **URL Monitoring**: Continuously checks specified URLs for new media.
-- **Notifications**: Sends notifications for new media availability using Apprise.
-- **Automatic Renting**: Rent or reserve media based on titles specified in `auto_rent_keywords.txt`.
+## Installation (recommended: pipx)
+- System requirements: Python 3.10+.
+- Debian/Ubuntu: `sudo apt install pipx` (or `python3-pipx`) then `pipx ensurepath`
+- Fedora/RHEL/CentOS: `sudo dnf install pipx` then `pipx ensurepath`
+- Arch/Manjaro: `sudo pacman -S python-pipx` then `pipx ensurepath`
+- Install onleiharr: `pipx install onleiharr`
+- Verify: `onleiharr --version`
 
-## Installation and Setup
-1. Install the required Python packages:
-   ```
-   pip install -r requirements.txt
-   ```
-2. Make a copy of the provided `config.example.ini` template to `config.ini` and `apprise.example.yml` to `apprise.yml`
-3. Modify both as per your needs.
+## Installation (alternative: from source)
+- Clone the repo and install deps: `pip install -r requirements.txt`
+- Run directly: `python3 main.py` (auto-creates config on first run)
+- Or run as module: `python3 -m onleiharr`
 
-## Configuration Details
-The `config.ini` file contains several sections:
+## Quick start
+1) Create/edit config: run once to auto-create a template if missing:
+   `onleiharr --once`
+   The default path is OS-specific (see below). Edit the created file with your credentials/URLs.
+2) Run once to test: `onleiharr --once`
+3) Continuous mode: `onleiharr`
 
-**[GENERAL]**:
-  - `poll_interval_secs`: Interval in seconds between consecutive checks of the Onleihe URLs.
-  - `auto_rent_keywords_path`: Path to the text file containing part of the titles of media to be auto-rented.
-  
-**[NOTIFICATION]**:
-  - `apprise_config_path`: Path to the Apprise configuration file for notifications.
-  - `test_notification`: Set to `True` to send a test notification on startup. Otherwise, set to `False`.
-  - `email`: E-Mail address to receive Onleihe media reservation/availability mails (can be omitted)
+## Configuration (TOML)
+- Default name: `onleiharr.toml`.
+- Search order: CLI `-c/--config` > env `ONLEIHARR_CONFIG` > OS default path
+  - Linux: `~/.config/onleiharr/onleiharr.toml`
+  - macOS: `~/Library/Application Support/onleiharr/onleiharr.toml`
+  - Windows: `%APPDATA%\onleiharr\onleiharr.toml`
+- If missing, the app creates a template at the resolved path and exits so you can fill credentials first.
 
-**[ONLEIHE-CREDENTIALS]**:
-  - `username`: Your Onleihe username.
-  - `password`: Your Onleihe password.
-  - `library`: The name of your library.
-  - `library-id`: Your personal library ID.
+### Example onleiharr.toml
+```toml
+[general]
+poll_interval_secs = 60.0
+urls = [
+  "https://www.onleihe.de/nbib24/frontend/versionInfoList,0-0-0-109-0-0-0-2008-400005-812926447-0.html", # ct magazine
+  "https://www.onleihe.de/nbib24/frontend/simpleMediaList,0-0-0-109-0-0-0-0-0-1957099581-0.html", # finanzen magazine
+]
+keywords = [
+  "c´t",
+  "finanzen",
+]
 
-**[ONLEIHE-URLS]**: 
-  - List of URLs to monitor. Add more URLs as needed. Make sure to sort the page that new media is always at the top.
+[notification]
+# urls = [
+#   "tgram://{bot_token}/{chat_id}/?format=html",
+#   "pover://{user_key}@{app_token}/?format=html&priority=-1",
+# ]
+# apprise_config_path = "apprise.yml" # legacy file-based config
 
-## Usage
-1. Setup `config.ini` and `apprise.yml` to your needs.
-2. Specify titles of media you want to auto-rent in `auto_rent_keywords.txt`.
-3. Run the `main.py` script.
+test_notification = false
+email = ""
 
-### Docker Deployment
-1. build docker image using `docker build -t onleiharr .`
-2. make sure all config files exists in current host folder (auto_rent_keywords.txt, apprise.yml and config.ini)
-3. start docker container using `docker run -it --rm --name onleiharr -v $(pwd)/apprise.yml:/app/apprise.yml -v $(pwd)/config.ini:/app/config.ini -v $(pwd)/auto_rent_keywords.txt:/app/auto_rent_keywords.txt onleiharr`
+[credentials]
+username = "your-username"
+password = "your-password"
+library = "your-library"
+library_id = 0
+```
 
-### Ansible Deployment
-1. modify your vars based on ansible/onleiharr.yaml in ansible/vars/external_vars.yml 
-2. run the playbook on your inventory `ansible-playbook -i your_inventory ansible/onleiharr.yaml`
+How to get your Onleihe URLs
+- In your browser, open the Onleihe section you want to monitor (e.g., magazine list, new releases, etc.).
+- Copy the full URL from the address bar and paste it into the `urls` list in `onleiharr.toml`.
+- For readability, add an inline comment per URL (as shown in the example).
+
+### Environment overrides (optional)
+- `ONLEIHARR_CONFIG` (config path)
+- `ONLEIHARR_URLS` (comma-separated list)
+- `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_LIBRARY`, `ONLEIHARR_LIBRARY_ID`
+- `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, `ONLEIHARR_KEYWORDS`
+
+### Notifications (Apprise)
+- Preferred: set `[notification].urls` (Telegram, Pushover, etc.).
+- Legacy: `apprise.yml` is still supported via `[notification].apprise_config_path`.
+
+## Systemd (user mode)
+- Install user unit: `onleiharr --install-as-user-systemd`
+- Reload and enable: `systemctl --user daemon-reload` then `systemctl --user enable --now onleiharr`
+- Logs: `journalctl --user -u onleiharr -f`
+- If user systemd is inactive: `loginctl enable-linger $USER`
+
+## Common flags
+- `--log-level DEBUG` for verbose logging
+- `--once` for a single poll iteration
+- `--interval 30` to override poll interval
+- `--test-notification` to send an immediate test notify on first run
+
+## Troubleshooting
+- No apprise URLs configured -> add `[notification].urls` or set `ONLEIHARR_APPRISE_URLS`
+- User systemd not active -> run `loginctl enable-linger $USER`, then reload/enable the unit
+- PATH issues with pipx -> run `pipx ensurepath` and open a new shell
+
+## Runtime behavior
+- Polls configured URLs, caches known media, sends notifications on new items.
+- Auto-rent/reserve triggers when title matches keywords.
+- Notifications are HTML formatted via Apprise.
 
 ## License
+- MIT
 
-This project is licensed under the MIT License.
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you'd like to change.
-
-Note: The Onleiharr project and this README are independent and not affiliated with the official Onleihe website or the organizations behind it.
