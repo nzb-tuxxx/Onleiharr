@@ -32,6 +32,17 @@ class NotificationConfig:
 
 
 @dataclass
+class GourouConfig:
+    bin_dir: Path | None
+    adept_dir: Path | None
+    download_dir: Path | None
+    timeout_secs: float
+    verbose: int
+    remove_drm: bool
+    remove_drm_ack: str | None
+
+
+@dataclass
 class GeneralConfig:
     poll_interval_secs: float
     urls: List[str]
@@ -43,6 +54,7 @@ class AppConfig:
     general: GeneralConfig
     notification: NotificationConfig
     credentials: Credentials
+    gourou: GourouConfig
     config_path: Path
 
 
@@ -93,6 +105,18 @@ keywords = [
 test_notification = false
 email = ""
 
+[gourou]
+# Optional path to libgourou utils binaries (acsmdownloader, adept_activate, ...)
+# bin_dir = "/usr/local/bin"
+# Optional ADEPT directory containing device.xml, activation.xml and devicesalt
+# adept_dir = "/home/user/.config/adept"
+# Optional default download directory for fulfilled files
+# download_dir = "/home/user/Downloads/onleihe"
+# timeout_secs = 30.0
+# verbose = 0
+# remove_drm = false  # If true, remove DRM from downloaded PDFs (check local laws)
+# remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
+
 [credentials]
 username = "your-username"
 password = "your-password"
@@ -108,6 +132,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     general_section = data.get("general", {})
     notification_section = data.get("notification", {})
     credentials_section = data.get("credentials", {})
+    gourou_section = data.get("gourou", {})
 
     urls = _env_list(environ.get("ONLEIHARR_URLS")) or general_section.get("urls") or []
     if not urls:
@@ -147,6 +172,38 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     if not username or not password or not library or library_id == 0:
         raise ConfigError("Credentials incomplete. Set username/password/library/library_id.")
 
+    gourou_bin_dir_value = environ.get("ONLEIHARR_GOUROU_BIN_DIR") or gourou_section.get("bin_dir")
+    gourou_adept_dir_value = environ.get("ONLEIHARR_GOUROU_ADEPT_DIR") or gourou_section.get("adept_dir")
+    gourou_download_dir_value = environ.get("ONLEIHARR_GOUROU_DOWNLOAD_DIR") or gourou_section.get("download_dir")
+
+    gourou_timeout = _env_float(environ.get("ONLEIHARR_GOUROU_TIMEOUT")) or gourou_section.get(
+        "timeout_secs", 30.0
+    )
+    gourou_verbose_env = environ.get("ONLEIHARR_GOUROU_VERBOSE")
+    gourou_verbose = (
+        _env_int(gourou_verbose_env)
+        if gourou_verbose_env is not None
+        else int(gourou_section.get("verbose", 0))
+    )
+    gourou_remove_drm_env = environ.get("ONLEIHARR_GOUROU_REMOVE_DRM")
+    gourou_remove_drm = (
+        _env_bool(gourou_remove_drm_env)
+        if gourou_remove_drm_env is not None
+        else bool(gourou_section.get("remove_drm", False))
+    )
+    gourou_remove_drm_ack_value = environ.get("ONLEIHARR_GOUROU_ACK_DRM") or gourou_section.get("remove_drm_ack")
+    gourou_remove_drm_ack = _optional_str(gourou_remove_drm_ack_value)
+
+    gourou = GourouConfig(
+        bin_dir=_resolve_optional_path_value(gourou_bin_dir_value, base=path.parent),
+        adept_dir=_resolve_optional_path_value(gourou_adept_dir_value, base=path.parent),
+        download_dir=_resolve_optional_path_value(gourou_download_dir_value, base=path.parent),
+        timeout_secs=float(gourou_timeout),
+        verbose=gourou_verbose,
+        remove_drm=gourou_remove_drm,
+        remove_drm_ack=gourou_remove_drm_ack,
+    )
+
     general = GeneralConfig(
         poll_interval_secs=float(poll_interval),
         urls=list(urls),
@@ -171,6 +228,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         general=general,
         notification=notification,
         credentials=credentials,
+        gourou=gourou,
         config_path=path,
     )
 
@@ -206,6 +264,15 @@ def _env_bool(raw: str | None) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"Invalid integer value: {raw}") from exc
+
+
 def _resolve_path(value: str | None, base: Path) -> Path:
     if value is None:
         raise ConfigError("Path value is missing in configuration")
@@ -218,3 +285,19 @@ def _resolve_optional_path(value: str | None, base: Path) -> Path:
         raise ConfigError("Apprise config path is missing in configuration")
     candidate = Path(value)
     return candidate if candidate.is_absolute() else (base / candidate)
+
+
+def _resolve_optional_path_value(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    if value == "":
+        return None
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else (base / candidate)
+
+
+def _optional_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None

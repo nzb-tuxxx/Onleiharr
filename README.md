@@ -56,12 +56,30 @@ keywords = [
 test_notification = false
 email = ""
 
+[gourou]
+# bin_dir = "/usr/local/bin"
+# adept_dir = "/home/user/.config/adept"
+# download_dir = "/home/user/Downloads/onleihe"
+# timeout_secs = 30.0
+# verbose = 0
+# remove_drm = false
+# remove_drm_ack = "I_UNDERSTAND"
+
 [credentials]
 username = "your-username"
 password = "your-password"
 library = "your-library"
 library_id = 0
 ```
+
+How to find `library` and `library_id`
+1) First find your consortium/Verbund: https://hilfe.onleihe.de/hilfe-onleihe-de/deine-onleihe-finden/c-3750
+2) Open: https://www.onleihe.de/nbib24/frontend/myBib,6465-0-0-100-0-0-0-0-0-0-0.html (replace `nbib24` with your Verbund).
+3) Find and select your library.
+4) Analyze the resulting URL; it contains both values.
+   Example (Achim):
+   https://www.onleihe.de/nbib24/frontend/login,0-0-0-800-0-0-0-0-0-0-0.html?libraryId=242
+   `library = "nbib24"` and `library_id = 242`
 
 How to get your Onleihe URLs
 - In your browser, open the Onleihe section you want to monitor (e.g., magazine list, new releases, etc.).
@@ -73,6 +91,29 @@ How to get your Onleihe URLs
 - `ONLEIHARR_URLS` (comma-separated list)
 - `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_LIBRARY`, `ONLEIHARR_LIBRARY_ID`
 - `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, `ONLEIHARR_KEYWORDS`
+- `ONLEIHARR_GOUROU_BIN_DIR`, `ONLEIHARR_GOUROU_ADEPT_DIR`, `ONLEIHARR_GOUROU_DOWNLOAD_DIR`, `ONLEIHARR_GOUROU_TIMEOUT`, `ONLEIHARR_GOUROU_VERBOSE`, `ONLEIHARR_GOUROU_REMOVE_DRM`, `ONLEIHARR_GOUROU_ACK_DRM`
+
+## libgourou setup (optional)
+libgourou is only needed for automatic downloads and optional DRM removal. Onleiharr can still notify and auto-rent without it.
+
+Recommended (AppImage):
+1) Download the latest release from https://forge.soutade.fr/soutade/libgourou/releases
+2) Grab the AppImage archive, e.g. `libgourou_utils-x.x.x-x86_64.AppImage.tar.gz`
+3) Extract it and set `gourou.bin_dir` (or `ONLEIHARR_GOUROU_BIN_DIR`) to the extracted directory containing `acsmdownloader`, `adept_activate`, etc.
+4) Before first use, initialize ADEPT once: `adept_activate --anonymous`
+
+Alternative options:
+- Build from source following the libgourou project docs.
+- Arch Linux: install https://aur.archlinux.org/packages/gourou and you typically do not need to set `gourou.bin_dir`.
+
+## DRM removal (third-party)
+DRM removal is disabled by default. To enable it, set both:
+- `gourou.remove_drm = true`
+- `gourou.remove_drm_ack = "I_UNDERSTAND"` (or `ONLEIHARR_GOUROU_ACK_DRM=I_UNDERSTAND`)
+
+This is not legal advice. You are responsible for verifying whether DRM removal for personal use is lawful in your jurisdiction.
+Onleiharr does not include DRM removal code; it only invokes a third-party tool (libgourou) that is not part of Onleiharr.
+Onleiharr developers accept no liability for misuse. See `DISCLAIMER.md` for details.
 
 ### Notifications (Apprise)
 - Preferred: set `[notification].urls` (Telegram, Pushover, etc.).
@@ -102,4 +143,3 @@ How to get your Onleihe URLs
 
 ## License
 - MIT
-

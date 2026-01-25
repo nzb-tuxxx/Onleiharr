@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from random import choice
 from typing import Iterable, Set
@@ -21,11 +22,14 @@ from onleiharr.config import (
     ensure_default_config,
     load_config,
 )
+from onleiharr.gourou import GourouClient, GourouError
 from onleiharr.models import Book, Magazine, Media
 from onleiharr.parser import fetch_media
-from onleiharr.onleihe import Onleihe
+from onleiharr.onleihe import Onleihe, RentResult
 
 logger = logging.getLogger(__name__)
+
+DRM_ACK_TOKEN = "I_UNDERSTAND"
 
 
 def load_version() -> str:
@@ -177,6 +181,68 @@ def notify(apobj: apprise.Apprise, message: str) -> None:
     apobj.notify(title="Onleihe: New media", body=message)
 
 
+def download_media_with_gourou(
+    media: Media,
+    rent_result: RentResult,
+    onleihe: Onleihe,
+    gourou_client: GourouClient | None,
+) -> None:
+    if gourou_client is None:
+        logger.debug("Gourou download disabled; skipping '%s'.", media.title)
+        return
+    if not rent_result.acsm_url:
+        logger.warning("No ACSM URL found for '%s'; download skipped.", media.title)
+        return
+    try:
+        logger.info("Fetching ACSM URL for '%s': %s", media.title, rent_result.acsm_url)
+        acsm_content = onleihe.fetch_acsm(rent_result.acsm_url)
+        if not acsm_content:
+            logger.error("Failed to download ACSM for '%s'.", media.title)
+            return
+
+        fd, tmp_path = tempfile.mkstemp(prefix=f"onleiharr_{media.id}_", suffix=".acsm")
+        os.close(fd)
+        acsm_path = Path(tmp_path)
+
+        try:
+            acsm_path.write_bytes(acsm_content)
+        except OSError as exc:
+            logger.error("Failed to write ACSM file for '%s': %s", media.title, exc)
+            return
+
+        cleanup = False
+        try:
+            result = gourou_client.download_acsm(acsm_path, notify=False)
+            cleanup = True
+            if result.output_path:
+                logger.info("Downloaded media to %s.", result.output_path)
+                if gourou_client.config.remove_drm:
+                    if not result.output_path.exists():
+                        logger.warning("Downloaded file not found for DRM removal: %s", result.output_path)
+                    elif result.output_path.suffix.lower() == ".pdf":
+                        try:
+                            gourou_client.remove_drm(result.output_path)
+                            logger.info("DRM removed for %s.", result.output_path)
+                        except GourouError as exc:
+                            logger.error("DRM removal failed for %s: %s", result.output_path, exc)
+                    else:
+                        logger.info("DRM removal enabled but file is not PDF; skipping %s.", result.output_path)
+            else:
+                logger.info("Download completed for '%s'.", media.title)
+        except GourouError as exc:
+            logger.error("Gourou download failed for '%s': %s", media.title, exc)
+        finally:
+            if cleanup:
+                try:
+                    acsm_path.unlink()
+                except OSError as exc:
+                    logger.debug("Failed to remove ACSM file %s: %s", acsm_path, exc)
+            else:
+                logger.info("Keeping ACSM file for debugging: %s", acsm_path)
+    except Exception as exc:
+        logger.exception("Unexpected error during download for '%s': %s", media.title, exc)
+
+
 def format_message(media: Media, availability_message: str) -> str:
     if isinstance(media, Book):
         return (
@@ -197,81 +263,119 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
         username=config.credentials.username,
         password=config.credentials.password,
     )
+    gourou_client = GourouClient(config.gourou)
+    if config.gourou.remove_drm:
+        if config.gourou.remove_drm_ack != DRM_ACK_TOKEN:
+            logger.warning(
+                "DRM removal requested but not acknowledged; "
+                "set gourou.remove_drm_ack or ONLEIHARR_GOUROU_ACK_DRM to '%s'. Disabling DRM removal.",
+                DRM_ACK_TOKEN,
+            )
+            config.gourou.remove_drm = False
+        else:
+            logger.warning(
+                "DRM removal is enabled. Ensure this is legal in your jurisdiction. "
+                "Onleiharr only calls third-party libgourou; see DISCLAIMER.md."
+            )
+    if not gourou_client.has_binaries(["acsmdownloader"]):
+        logger.warning(
+            "libgourou binaries not found; auto-download disabled (notifications and auto-rent still work). "
+            "Install them in PATH or set gourou.bin_dir / ONLEIHARR_GOUROU_BIN_DIR."
+        )
+        gourou_client = None
 
     known_media: Set[Media] = set()
+    rented_media_ids: Set[int] = set()
     first_run = True
     test_notify = args.test_notification or config.notification.test_notification
 
     while True:
-        current_media_list: list[Media] = []
-        current_media: Set[Media] = set()
-        fetch_elements = 100 if first_run else 50
-        for url in config.general.urls:
-            try:
-                url_media = list(fetch_media(url, elements=fetch_elements))
-                logger.debug("Fetched %d media items from %s", len(url_media), url)
-                if not url_media:
-                    logger.warning("No media found for url; check configuration: %s", url)
-                current_media_list.extend(url_media)
-            except RequestException as exc:
-                logger.error("Network error while processing url %s: %s", url, exc)
+        try:
+            current_media_list: list[Media] = []
+            current_media: Set[Media] = set()
+            fetch_elements = 100 if first_run else 50
+            for url in config.general.urls:
+                try:
+                    url_media = list(fetch_media(url, elements=fetch_elements))
+                    logger.debug("Fetched %d media items from %s", len(url_media), url)
+                    if not url_media:
+                        logger.warning("No media found for url; check configuration: %s", url)
+                    current_media_list.extend(url_media)
+                except RequestException as exc:
+                    logger.error("Network error while processing url %s: %s", url, exc)
+                except Exception as exc:
+                    logger.exception("Unexpected error while processing url %s: %s", url, exc)
 
-        if current_media_list:
-            current_media = set(current_media_list)
+            if current_media_list:
+                current_media = set(current_media_list)
 
-        if first_run:
-            logger.info("First run, populating cache with %d media items", len(current_media))
-            logger.info(
-                "Done - now polling every %s seconds", int(config.general.poll_interval_secs)
-            )
-            if logger.isEnabledFor(logging.DEBUG):
-                for media in current_media:
-                    logger.debug("[CACHE] %s", media)
-            known_media = current_media
-            first_run = False
+            if first_run:
+                logger.info("First run, populating cache with %d media items", len(current_media))
+                logger.info(
+                    "Done - now polling every %s seconds", int(config.general.poll_interval_secs)
+                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    for media in current_media:
+                        logger.debug("[CACHE] %s", media)
+                known_media = current_media
+                first_run = False
 
-            if test_notify:
-                if current_media_list:
-                    last_media = current_media_list[-1]
-                    logger.info("Test notification mode: sending notify for '%s'.", last_media.title)
-                    notify_message = format_message(last_media, "test notification")
-                    notify(apobj, notify_message)
-                else:
-                    logger.warning("Test notification requested but no media found on first run.")
-        else:
-            new_media = current_media - known_media
-            if new_media:
-                logger.info("Found %d new media items", len(new_media))
-            else:
-                logger.debug("No new media found this cycle")
-            for media in new_media:
-                auto_rent = False
-                auto_reserve = False
-                if matches_filter(media.title, keywords):
-                    logger.info("%s matches filter", media.title)
-                    if media.available:
-                        logger.info("%s is available, attempting auto rent", media.title)
-                        onleihe.rent_media(media)
-                        auto_rent = True
+                if test_notify:
+                    if current_media_list:
+                        last_media = current_media_list[-1]
+                        logger.info("Test notification mode: sending notify for '%s'.", last_media.title)
+                        notify_message = format_message(last_media, "test notification")
+                        notify(apobj, notify_message)
                     else:
-                        logger.info("%s is unavailable, attempting to reserve", media.title)
-                        onleihe.reserve_media(media, config.notification.email or "")
-                        auto_reserve = True
-
-                if auto_rent:
-                    availability_message = "auto rented :)"
-                elif auto_reserve:
-                    availability_message = f"auto reserved - available at <b>{media.availability_date}</b>"
-                elif media.available:
-                    availability_message = "available"
+                        logger.warning("Test notification requested but no media found on first run.")
+            else:
+                new_media = current_media - known_media
+                if new_media:
+                    logger.info("Found %d new media items", len(new_media))
                 else:
-                    availability_message = f"not available until <b>{media.availability_date}</b>"
+                    logger.debug("No new media found this cycle")
+                for media in new_media:
+                    try:
+                        auto_rent = False
+                        auto_reserve = False
+                        if matches_filter(media.title, keywords):
+                            logger.info("%s matches filter", media.title)
+                            if media.available:
+                                logger.info("%s is available, attempting auto rent", media.title)
+                                if media.id in rented_media_ids:
+                                    logger.debug("Media id %s already rented in this run; skipping.", media.id)
+                                else:
+                                    rent_result = onleihe.rent_media(media)
+                                    if rent_result:
+                                        auto_rent = True
+                                        rented_media_ids.add(media.id)
+                                        if media.format != "audio":
+                                            download_media_with_gourou(media, rent_result, onleihe, gourou_client)
+                                        else:
+                                            logger.info("Skipping download for audio media '%s'.", media.title)
+                            else:
+                                logger.info("%s is unavailable, attempting to reserve", media.title)
+                                onleihe.reserve_media(media, config.notification.email or "")
+                                auto_reserve = True
 
-                notify_message = format_message(media, availability_message)
-                logger.info("Notify: %s", notify_message)
-                notify(apobj, notify_message)
+                        if auto_rent:
+                            availability_message = "auto rented :)"
+                        elif auto_reserve:
+                            availability_message = f"auto reserved - available at <b>{media.availability_date}</b>"
+                        elif media.available:
+                            availability_message = "available"
+                        else:
+                            availability_message = f"not available until <b>{media.availability_date}</b>"
 
-            known_media.update(new_media)
+                        notify_message = format_message(media, availability_message)
+                        logger.info("Notify: %s", notify_message)
+                        notify(apobj, notify_message)
+                    except Exception as exc:
+                        logger.exception("Error handling media '%s': %s", media.title, exc)
+
+                known_media.update(new_media)
+        except Exception as exc:
+            logger.exception("Unhandled error in polling loop: %s", exc)
 
         if args.once:
             logger.info("--once set; exiting after first iteration")
@@ -283,6 +387,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     setup_logging(args.log_level)
+    logger.info("Onleiharr version %s", load_version())
     logger.info(
 """
 ||  OOO   N   N  L      EEEEE  I  H   H  AAAAA  RRRR   RRRR   ||

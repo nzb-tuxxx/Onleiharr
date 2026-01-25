@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import Iterator
 
@@ -7,6 +8,8 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from onleiharr.models import Book, Magazine, Media
+
+logger = logging.getLogger(__name__)
 
 
 def extract_book_info(book_element: Tag | BeautifulSoup, library: str) -> Book:
@@ -105,7 +108,10 @@ def fetch_media(url: str, elements: int = 50, timeout: int = 10) -> Iterator[Med
     media_containers = soup.find_all('div', class_='card')
 
     for container in media_containers:
-        if container.find('p', {'test-id': 'cardAuthor'}):
-            yield extract_book_info(container, library)
-        else:
-            yield extract_magazine_info(container, library)
+        try:
+            if container.find('p', {'test-id': 'cardAuthor'}):
+                yield extract_book_info(container, library)
+            else:
+                yield extract_magazine_info(container, library)
+        except Exception as exc:
+            logger.warning("Skipping media item due to parse error: %s", exc, exc_info=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import wraps
 from typing import Callable, Tuple, TypeVar
 
@@ -55,6 +56,25 @@ class ReserveError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class RentResult:
+    html: str
+    acsm_url: str | None
+
+
+def extract_acsm_url(html: str) -> str | None:
+    soup = BeautifulSoup(html, 'html.parser')
+    link = soup.select_one('a[title="Download"][href*=".acsm"]')
+    if not link:
+        link = soup.select_one('a[aria-label="Download"][href*=".acsm"]')
+    if not link:
+        link = soup.find('a', href=lambda value: value and '.acsm' in value.lower())
+    if not link:
+        return None
+    href = link.get('href')
+    return str(href) if href else None
+
+
 class Onleihe:
     def __init__(self, library: str, library_id: int, username: str, password: str, timeout: int = 10):
         # Create a session to be used for all requests
@@ -107,7 +127,7 @@ class Onleihe:
         return response_post.text
 
     @handle_exceptions(exception_types=(requests.RequestException, RentError))
-    def rent_media(self, media: Media, lend_period: int = 2, login: bool = True):
+    def rent_media(self, media: Media, lend_period: int = 2, login: bool = True) -> RentResult | None:
         if login:
             self.login()
 
@@ -126,7 +146,8 @@ class Onleihe:
         if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
             raise RentError("An unexpected error occurred while trying to rent the media. Please try again later.")
 
-        return response.text
+        acsm_url = extract_acsm_url(response.text)
+        return RentResult(html=response.text, acsm_url=acsm_url)
 
     @handle_exceptions(exception_types=(requests.RequestException, ReserveError))
     def reserve_media(self, media: Media, email: str | None = None, login: bool = True):
@@ -151,3 +172,9 @@ class Onleihe:
             raise ReserveError("An unexpected error occurred while trying to reserve the media. Please try again later.")
 
         return response.text
+
+    @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
+    def fetch_acsm(self, url: str) -> bytes | None:
+        response = self.session.get(url, timeout=self.timeout)
+        response.raise_for_status()
+        return response.content
