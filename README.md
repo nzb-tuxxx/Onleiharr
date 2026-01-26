@@ -3,14 +3,19 @@
 ![Telegram Notification](images/onleiharr_telegram.jpg)
 
 ## Overview
-Onleiharr monitors specific Onleihe URLs, sends notifications for new media, and can auto-rent or reserve based on keyword filters.
+Onleiharr monitors specific Onleihe URLs, sends notifications for new media (with optional media attachments), and can auto-rent or reserve based on keyword filters. It also supports optional auto-downloads via libgourou and optional DRM removal with explicit acknowledgment.
 
 ## Installation (recommended: pipx)
-- System requirements: Python 3.10+.
+Requirements: Python 3.10+.
+
+Install pipx:
 - Debian/Ubuntu: `sudo apt install pipx` (or `python3-pipx`) then `pipx ensurepath`
 - Fedora/RHEL/CentOS: `sudo dnf install pipx` then `pipx ensurepath`
 - Arch/Manjaro: `sudo pacman -S python-pipx` then `pipx ensurepath`
-- Install onleiharr: `pipx install onleiharr`
+
+Install/Upgrade onleiharr:
+- `pipx install onleiharr`
+- `pipx upgrade onleiharr`
 - Verify: `onleiharr --version`
 
 ## Installation (alternative: from source)
@@ -61,7 +66,6 @@ email = ""
 # adept_dir = "/home/user/.config/adept"
 # download_dir = "/home/user/Downloads/onleihe"
 # timeout_secs = 30.0
-# verbose = 0
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
 
@@ -91,13 +95,14 @@ How to get your Onleihe URLs
 - `ONLEIHARR_URLS` (comma-separated list)
 - `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_LIBRARY`, `ONLEIHARR_LIBRARY_ID`
 - `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, `ONLEIHARR_KEYWORDS`
-- `ONLEIHARR_GOUROU_BIN_DIR`, `ONLEIHARR_GOUROU_ADEPT_DIR`, `ONLEIHARR_GOUROU_DOWNLOAD_DIR`, `ONLEIHARR_GOUROU_TIMEOUT`, `ONLEIHARR_GOUROU_VERBOSE`, `ONLEIHARR_GOUROU_REMOVE_DRM`, `ONLEIHARR_GOUROU_ACK_DRM`
+- `ONLEIHARR_GOUROU_BIN_DIR`, `ONLEIHARR_GOUROU_ADEPT_DIR`, `ONLEIHARR_GOUROU_DOWNLOAD_DIR`, `ONLEIHARR_GOUROU_TIMEOUT`, `ONLEIHARR_GOUROU_REMOVE_DRM`, `ONLEIHARR_GOUROU_ACK_DRM`
 
 ## libgourou setup (optional)
 libgourou is only needed for automatic downloads and optional DRM removal. Onleiharr can still notify and auto-rent without it.
 
 Recommended (AppImage):
 1) Download the latest release from https://forge.soutade.fr/soutade/libgourou/releases
+   Note: AppImage builds are for x86_64 only; other architectures (e.g., Raspberry Pi) should build from source following the vendor instructions.
 2) Grab the AppImage archive, e.g. `libgourou_utils-x.x.x-x86_64.AppImage.tar.gz`
 3) Extract it and set `gourou.bin_dir` (or `ONLEIHARR_GOUROU_BIN_DIR`) to the extracted directory containing `acsmdownloader`, `adept_activate`, etc.
 4) Before first use, initialize ADEPT once: `adept_activate --anonymous`
@@ -116,8 +121,15 @@ Onleiharr does not include DRM removal code; it only invokes a third-party tool 
 Onleiharr developers accept no liability for misuse. See `DISCLAIMER.md` for details.
 
 ### Notifications (Apprise)
-- Preferred: set `[notification].urls` (Telegram, Pushover, etc.).
+- Preferred: set `[notification].urls` (Telegram, Discord, Slack, etc.).
 - Legacy: `apprise.yml` is still supported via `[notification].apprise_config_path`.
+
+#### Send media via Apprise
+Media is sent via Apprise's attachment support and only works when the provider reports attachment capability.
+Common providers that support media include: Telegram, Discord, Slack, Gotify, and Email/SMTP.
+Email/SMTP media may be subject to provider size limits.
+If media attachment is missing, first enable `--log-level DEBUG` and check the logs to confirm whether
+Apprise reports attachment support for your provider before troubleshooting further.
 
 ## Systemd (user mode)
 - Install user unit: `onleiharr --install-as-user-systemd`
@@ -126,7 +138,7 @@ Onleiharr developers accept no liability for misuse. See `DISCLAIMER.md` for det
 - If user systemd is inactive: `loginctl enable-linger $USER`
 
 ## Common flags
-- `--log-level DEBUG` for verbose logging
+- `--log-level DEBUG` for verbose logging (also enables libgourou `-v`)
 - `--once` for a single poll iteration
 - `--interval 30` to override poll interval
 - `--test-notification` to send an immediate test notify on first run

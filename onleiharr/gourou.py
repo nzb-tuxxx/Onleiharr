@@ -189,7 +189,7 @@ class GourouClient:
         return self._run(cmd)
 
     def _verbose_flags(self) -> list[str]:
-        return ["-v"] * max(0, int(self.config.verbose))
+        return ["-v"] if logger.isEnabledFor(logging.DEBUG) else []
 
     def _resolve_bin(self, name: str) -> str:
         path = self._find_bin(name)

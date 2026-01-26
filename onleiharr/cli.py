@@ -177,7 +177,29 @@ def build_apprise(config: AppConfig) -> apprise.Apprise:
     return apobj
 
 
-def notify(apobj: apprise.Apprise, message: str) -> None:
+def apprise_supports_attachments(apobj: apprise.Apprise) -> bool:
+    return any(getattr(server, "attachment_support", False) for server in apobj.find())
+
+
+def notify(
+    apobj: apprise.Apprise,
+    message: str,
+    attachments: Iterable[Path] | None = None,
+) -> None:
+    attachment_paths: list[str] = []
+    if attachments:
+        for attachment in attachments:
+            if attachment.exists():
+                attachment_paths.append(str(attachment))
+            else:
+                logger.warning("Attachment not found; skipping: %s", attachment)
+        if attachment_paths:
+            if apprise_supports_attachments(apobj):
+                apobj.notify(title="Onleihe: New media", body=message, attach=attachment_paths)
+                return
+            logger.warning(
+                "No Apprise targets support attachments; sending notification without attachments."
+            )
     apobj.notify(title="Onleihe: New media", body=message)
 
 
@@ -186,19 +208,20 @@ def download_media_with_gourou(
     rent_result: RentResult,
     onleihe: Onleihe,
     gourou_client: GourouClient | None,
-) -> None:
+) -> Path | None:
     if gourou_client is None:
         logger.debug("Gourou download disabled; skipping '%s'.", media.title)
-        return
+        return None
     if not rent_result.acsm_url:
         logger.warning("No ACSM URL found for '%s'; download skipped.", media.title)
-        return
+        return None
+    downloaded_path: Path | None = None
     try:
         logger.info("Fetching ACSM URL for '%s': %s", media.title, rent_result.acsm_url)
         acsm_content = onleihe.fetch_acsm(rent_result.acsm_url)
         if not acsm_content:
             logger.error("Failed to download ACSM for '%s'.", media.title)
-            return
+            return None
 
         fd, tmp_path = tempfile.mkstemp(prefix=f"onleiharr_{media.id}_", suffix=".acsm")
         os.close(fd)
@@ -216,6 +239,10 @@ def download_media_with_gourou(
             cleanup = True
             if result.output_path:
                 logger.info("Downloaded media to %s.", result.output_path)
+                if result.output_path.exists():
+                    downloaded_path = result.output_path
+                else:
+                    logger.warning("Downloaded file not found; attachment skipped: %s", result.output_path)
                 if gourou_client.config.remove_drm:
                     if not result.output_path.exists():
                         logger.warning("Downloaded file not found for DRM removal: %s", result.output_path)
@@ -241,6 +268,7 @@ def download_media_with_gourou(
                 logger.info("Keeping ACSM file for debugging: %s", acsm_path)
     except Exception as exc:
         logger.exception("Unexpected error during download for '%s': %s", media.title, exc)
+    return downloaded_path
 
 
 def format_message(media: Media, availability_message: str) -> str:
@@ -254,6 +282,22 @@ def format_message(media: Media, availability_message: str) -> str:
     return f"<b><a href=\"{media.full_url}\">{media.title}</a></b> {availability_message}"
 
 
+def run_startup_checks(config: AppConfig) -> None:
+    if config.gourou.remove_drm:
+        if config.gourou.remove_drm_ack != DRM_ACK_TOKEN:
+            logger.warning(
+                "DRM removal requested but not acknowledged; please acknowledge the DRM removal conditions by setting "
+                "gourou.remove_drm_ack or ONLEIHARR_GOUROU_ACK_DRM to '%s'. Disabling DRM removal.",
+                DRM_ACK_TOKEN,
+            )
+            config.gourou.remove_drm = False
+        else:
+            logger.warning(
+                "DRM removal is enabled. Ensure this is legal in your jurisdiction. "
+                "Onleiharr only calls third-party libgourou; see DISCLAIMER.md."
+            )
+
+
 def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     keywords = load_keywords_from_config(config.general.keywords)
     apobj = build_apprise(config)
@@ -264,19 +308,6 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
         password=config.credentials.password,
     )
     gourou_client = GourouClient(config.gourou)
-    if config.gourou.remove_drm:
-        if config.gourou.remove_drm_ack != DRM_ACK_TOKEN:
-            logger.warning(
-                "DRM removal requested but not acknowledged; "
-                "set gourou.remove_drm_ack or ONLEIHARR_GOUROU_ACK_DRM to '%s'. Disabling DRM removal.",
-                DRM_ACK_TOKEN,
-            )
-            config.gourou.remove_drm = False
-        else:
-            logger.warning(
-                "DRM removal is enabled. Ensure this is legal in your jurisdiction. "
-                "Onleiharr only calls third-party libgourou; see DISCLAIMER.md."
-            )
     if not gourou_client.has_binaries(["acsmdownloader"]):
         logger.warning(
             "libgourou binaries not found; auto-download disabled (notifications and auto-rent still work). "
@@ -338,6 +369,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                     try:
                         auto_rent = False
                         auto_reserve = False
+                        download_path: Path | None = None
                         if matches_filter(media.title, keywords):
                             logger.info("%s matches filter", media.title)
                             if media.available:
@@ -350,7 +382,9 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                                         auto_rent = True
                                         rented_media_ids.add(media.id)
                                         if media.format != "audio":
-                                            download_media_with_gourou(media, rent_result, onleihe, gourou_client)
+                                            download_path = download_media_with_gourou(
+                                                media, rent_result, onleihe, gourou_client
+                                            )
                                         else:
                                             logger.info("Skipping download for audio media '%s'.", media.title)
                             else:
@@ -369,7 +403,11 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
 
                         notify_message = format_message(media, availability_message)
                         logger.info("Notify: %s", notify_message)
-                        notify(apobj, notify_message)
+                        notify(
+                            apobj,
+                            notify_message,
+                            attachments=[download_path] if download_path else None,
+                        )
                     except Exception as exc:
                         logger.exception("Error handling media '%s': %s", media.title, exc)
 
@@ -421,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         config.general.poll_interval_secs = args.interval
     if args.test_notification:
         config.notification.test_notification = True
+
+    run_startup_checks(config)
 
     try:
         run_loop(config, args)

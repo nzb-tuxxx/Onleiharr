@@ -37,7 +37,6 @@ class GourouConfig:
     adept_dir: Path | None
     download_dir: Path | None
     timeout_secs: float
-    verbose: int
     remove_drm: bool
     remove_drm_ack: str | None
 
@@ -113,7 +112,6 @@ email = ""
 # Optional default download directory for fulfilled files
 # download_dir = "/home/user/Downloads/onleihe"
 # timeout_secs = 30.0
-# verbose = 0
 # remove_drm = false  # If true, remove DRM from downloaded PDFs (check local laws)
 # remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
 
@@ -179,12 +177,6 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     gourou_timeout = _env_float(environ.get("ONLEIHARR_GOUROU_TIMEOUT")) or gourou_section.get(
         "timeout_secs", 30.0
     )
-    gourou_verbose_env = environ.get("ONLEIHARR_GOUROU_VERBOSE")
-    gourou_verbose = (
-        _env_int(gourou_verbose_env)
-        if gourou_verbose_env is not None
-        else int(gourou_section.get("verbose", 0))
-    )
     gourou_remove_drm_env = environ.get("ONLEIHARR_GOUROU_REMOVE_DRM")
     gourou_remove_drm = (
         _env_bool(gourou_remove_drm_env)
@@ -199,7 +191,6 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         adept_dir=_resolve_optional_path_value(gourou_adept_dir_value, base=path.parent),
         download_dir=_resolve_optional_path_value(gourou_download_dir_value, base=path.parent),
         timeout_secs=float(gourou_timeout),
-        verbose=gourou_verbose,
         remove_drm=gourou_remove_drm,
         remove_drm_ack=gourou_remove_drm_ack,
     )
@@ -262,15 +253,6 @@ def _env_bool(raw: str | None) -> bool:
     if raw is None:
         return False
     return raw.lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(raw: str | None) -> int | None:
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigError(f"Invalid integer value: {raw}") from exc
 
 
 def _resolve_path(value: str | None, base: Path) -> Path:
