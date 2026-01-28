@@ -64,7 +64,7 @@ email = ""
 [gourou]
 # bin_dir = "/usr/local/bin"
 # adept_dir = "/home/user/.config/adept"
-# download_dir = "/home/user/Downloads/onleihe"
+# download_dir = "~/Downloads/Onleiharr"
 # timeout_secs = 30.0
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
@@ -88,6 +88,7 @@ How to find `library` and `library_id`
 How to get your Onleihe URLs
 - In your browser, open the Onleihe section you want to monitor (e.g., magazine list, new releases, etc.).
 - Copy the full URL from the address bar and paste it into the `urls` list in `onleiharr.toml`.
+- Keep the list sorted by publication date in descending order, otherwise new media cannot be detected reliably.
 - For readability, add an inline comment per URL (as shown in the example).
 
 ### Environment overrides (optional)

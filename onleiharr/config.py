@@ -110,7 +110,7 @@ email = ""
 # Optional ADEPT directory containing device.xml, activation.xml and devicesalt
 # adept_dir = "/home/user/.config/adept"
 # Optional default download directory for fulfilled files
-# download_dir = "/home/user/Downloads/onleihe"
+# download_dir = "~/Downloads/Onleiharr"
 # timeout_secs = 30.0
 # remove_drm = false  # If true, remove DRM from downloaded PDFs (check local laws)
 # remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
@@ -258,14 +258,14 @@ def _env_bool(raw: str | None) -> bool:
 def _resolve_path(value: str | None, base: Path) -> Path:
     if value is None:
         raise ConfigError("Path value is missing in configuration")
-    candidate = Path(value)
+    candidate = Path(value).expanduser()
     return candidate if candidate.is_absolute() else (base / candidate)
 
 
 def _resolve_optional_path(value: str | None, base: Path) -> Path:
     if value is None:
         raise ConfigError("Apprise config path is missing in configuration")
-    candidate = Path(value)
+    candidate = Path(value).expanduser()
     return candidate if candidate.is_absolute() else (base / candidate)
 
 
@@ -274,7 +274,7 @@ def _resolve_optional_path_value(value: str | None, base: Path) -> Path | None:
         return None
     if value == "":
         return None
-    candidate = Path(value)
+    candidate = Path(value).expanduser()
     return candidate if candidate.is_absolute() else (base / candidate)
 
 

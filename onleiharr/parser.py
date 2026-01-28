@@ -7,6 +7,7 @@ from typing import Iterator
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from onleiharr.http import DEFAULT_HEADERS
 from onleiharr.models import Book, Magazine, Media
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def extract_magazine_info(magazine_element: Tag | BeautifulSoup, library: str) -
 def fetch_media(url: str, elements: int = 50, timeout: int = 10) -> Iterator[Media]:
     data = {'elementsPerPage': str(elements)}
 
-    response = requests.post(url, data=data, timeout=timeout)
+    response = requests.post(url, data=data, timeout=timeout, headers=DEFAULT_HEADERS)
     response.raise_for_status()
 
     library = url.split('/')[3]

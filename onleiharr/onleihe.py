@@ -8,6 +8,7 @@ from typing import Callable, Tuple, TypeVar
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from onleiharr.http import DEFAULT_HEADERS
 from onleiharr.models import Media
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class Onleihe:
         self.username = username
         self.password = password
         self.session = requests.Session()
+        self.session.headers.update(DEFAULT_HEADERS)
         self.timeout = timeout
 
     @handle_exceptions(exception_types=(requests.RequestException, LoginError))
