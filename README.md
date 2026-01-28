@@ -62,8 +62,8 @@ test_notification = false
 email = ""
 
 [gourou]
-# bin_dir = "/usr/local/bin"
-# adept_dir = "/home/user/.config/adept"
+# bin_dir = "~/bin"
+# adept_dir = "~/.config/adept"
 # download_dir = "~/Downloads/Onleiharr"
 # timeout_secs = 30.0
 # remove_drm = false

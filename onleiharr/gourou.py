@@ -42,6 +42,16 @@ class GourouClient:
     def __init__(self, config: GourouConfig):
         self.config = config
 
+    @staticmethod
+    def _expand_user_path(path: Path) -> Path:
+        return path.expanduser()
+
+    @staticmethod
+    def _expand_user_optional_path(path: Path | None) -> Path | None:
+        if path is None:
+            return None
+        return path.expanduser()
+
     def has_binaries(self, names: list[str]) -> bool:
         return all(self._find_bin(name) is not None for name in names)
 
@@ -74,6 +84,7 @@ class GourouClient:
         if random_serial:
             cmd.append("-r")
         output_dir = output_dir or self.config.adept_dir
+        output_dir = self._expand_user_optional_path(output_dir)
         if output_dir:
             cmd.extend(["-O", str(output_dir)])
 
@@ -88,6 +99,7 @@ class GourouClient:
         notify: bool = True,
         adept_dir: Path | None = None,
     ) -> DownloadResult:
+        acsm_path = self._expand_user_path(acsm_path)
         if not acsm_path.exists():
             raise GourouError(f"ACSM file not found: {acsm_path}")
 
@@ -102,6 +114,7 @@ class GourouClient:
             cmd.append("-r")
 
         output_dir = output_dir or self.config.download_dir
+        output_dir = self._expand_user_optional_path(output_dir)
         if output_dir:
             cmd.extend(["-O", str(output_dir)])
         if output_file:
@@ -125,6 +138,7 @@ class GourouClient:
         cmd.extend(self._verbose_flags())
         cmd.extend(["-D", str(adept_dir), "-e"])
 
+        output_dir = self._expand_user_optional_path(output_dir)
         if output_dir:
             cmd.extend(["-O", str(output_dir)])
         if output_file:
@@ -172,6 +186,7 @@ class GourouClient:
         output_file: str | None = None,
         adept_dir: Path | None = None,
     ) -> CommandResult:
+        input_file = self._expand_user_path(input_file)
         if not input_file.exists():
             raise GourouError(f"Input file not found: {input_file}")
 
@@ -180,6 +195,7 @@ class GourouClient:
         cmd = [self._resolve_bin("adept_remove")]
         cmd.extend(self._verbose_flags())
         cmd.extend(["-D", str(adept_dir)])
+        output_dir = self._expand_user_optional_path(output_dir)
         if output_dir:
             cmd.extend(["-O", str(output_dir)])
         if output_file:
@@ -205,12 +221,13 @@ class GourouClient:
         if path:
             return path
 
-        if self.config.bin_dir:
-            search_path = f"{self.config.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        bin_dir = self._expand_user_optional_path(self.config.bin_dir)
+        if bin_dir:
+            search_path = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
             path = shutil.which(name, path=search_path)
             if path:
                 return path
-            candidate = self.config.bin_dir / name
+            candidate = bin_dir / name
             if candidate.is_file():
                 return str(candidate)
 
@@ -219,9 +236,10 @@ class GourouClient:
     def _run(self, cmd: list[str]) -> CommandResult:
         env = dict(os.environ)
         if self.config.bin_dir:
-            env["PATH"] = f"{self.config.bin_dir}{os.pathsep}{env.get('PATH', '')}"
+            bin_dir = self._expand_user_path(self.config.bin_dir)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
         if self.config.adept_dir:
-            env["ADEPT_DIR"] = str(self.config.adept_dir)
+            env["ADEPT_DIR"] = str(self._expand_user_path(self.config.adept_dir))
 
         try:
             completed = subprocess.run(
@@ -247,12 +265,12 @@ class GourouClient:
 
     def _resolve_adept_dir(self, override: Path | None = None) -> Path | None:
         if override:
-            return override
+            return self._expand_user_path(override)
         if self.config.adept_dir:
-            return self.config.adept_dir
+            return self._expand_user_path(self.config.adept_dir)
         env_dir = os.getenv("ADEPT_DIR")
         if env_dir:
-            return Path(env_dir)
+            return Path(env_dir).expanduser()
 
         default_dir = Path.home() / ".config" / "adept"
         if self._has_adept_files(default_dir):
@@ -297,7 +315,7 @@ class GourouClient:
         for line in stdout.splitlines():
             line = line.strip()
             if line.startswith("Created "):
-                return Path(line[len("Created ") :].strip())
+                return Path(line[len("Created ") :].strip()).expanduser()
         return None
 
     @staticmethod
@@ -306,7 +324,7 @@ class GourouClient:
         for line in stdout.splitlines():
             line = line.strip()
             if line.startswith(prefix):
-                return Path(line[len(prefix) :].strip())
+                return Path(line[len(prefix) :].strip()).expanduser()
         return None
 
     @staticmethod

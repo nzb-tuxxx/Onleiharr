@@ -106,9 +106,9 @@ email = ""
 
 [gourou]
 # Optional path to libgourou utils binaries (acsmdownloader, adept_activate, ...)
-# bin_dir = "/usr/local/bin"
+# bin_dir = "~/bin"
 # Optional ADEPT directory containing device.xml, activation.xml and devicesalt
-# adept_dir = "/home/user/.config/adept"
+# adept_dir = "~/.config/adept"
 # Optional default download directory for fulfilled files
 # download_dir = "~/Downloads/Onleiharr"
 # timeout_secs = 30.0
