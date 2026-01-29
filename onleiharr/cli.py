@@ -246,14 +246,17 @@ def download_media_with_gourou(
                 if gourou_client.config.remove_drm:
                     if not result.output_path.exists():
                         logger.warning("Downloaded file not found for DRM removal: %s", result.output_path)
-                    elif result.output_path.suffix.lower() == ".pdf":
+                    elif result.output_path.suffix.lower() in {".pdf", ".epub"}:
                         try:
                             gourou_client.remove_drm(result.output_path)
                             logger.info("DRM removed for %s.", result.output_path)
                         except GourouError as exc:
                             logger.error("DRM removal failed for %s: %s", result.output_path, exc)
                     else:
-                        logger.info("DRM removal enabled but file is not PDF; skipping %s.", result.output_path)
+                        logger.info(
+                            "DRM removal enabled but file is not PDF/EPUB; skipping %s.",
+                            result.output_path,
+                        )
             else:
                 logger.info("Download completed for '%s'.", media.title)
         except GourouError as exc:

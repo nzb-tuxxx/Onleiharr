@@ -112,7 +112,7 @@ email = ""
 # Optional default download directory for fulfilled files
 # download_dir = "~/Downloads/Onleiharr"
 # timeout_secs = 30.0
-# remove_drm = false  # If true, remove DRM from downloaded PDFs (check local laws)
+# remove_drm = false  # If true, remove DRM from downloaded PDFs/EPUBs (check local laws)
 # remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
 
 [credentials]
