@@ -33,6 +33,7 @@ Build / Run / Lint / Test Commands
 - Format (optional): `pip install black` then `black onleiharr *.py`.
 - Type check (optional): `pip install mypy` then `mypy onleiharr` (add stubs for requests/bs4 if needed).
 - Single pytest pattern (if you add pytest): `pytest tests/test_file.py -k name_substring`.
+- Build (packaging): `python -m build --no-isolation` (deps are preinstalled system-wide; isolation can cause access issues).
 - Docker build: `docker build -t onleiharr .`.
 - Docker run example:
   `docker run -it --rm --name onleiharr \

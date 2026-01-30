@@ -3,7 +3,10 @@
 ![Telegram Notification](images/onleiharr_telegram.jpg)
 
 ## Overview
-Onleiharr monitors specific Onleihe URLs, sends notifications for new media (with optional media attachments), and can auto-rent or reserve based on keyword filters. It also supports optional auto-downloads via libgourou and optional DRM removal with explicit acknowledgment.
+- Monitor Onleihe URLs and notify on new media.
+- Auto-rent or reserve based on keyword filters.
+- Optional auto-downloads via libgourou and DRM removal with explicit acknowledgment.
+- Send media directly to a Kindle via Apprise email/SMTP.
 
 ## Installation (recommended: pipx)
 Requirements: Python 3.10+.
@@ -131,6 +134,23 @@ Common providers that support media include: Telegram, Discord, Slack, Gotify, a
 Email/SMTP media may be subject to provider size limits.
 If media attachment is missing, first enable `--log-level DEBUG` and check the logs to confirm whether
 Apprise reports attachment support for your provider before troubleshooting further.
+
+### Kindle delivery via SMTP (Apprise)
+You can route downloaded media directly to your Kindle by sending email via SMTP through Apprise.
+Use a mailto-style Apprise URL and set the recipient to your Kindle address.
+
+Example (replace placeholders with real values):
+```toml
+[notification]
+urls = [
+  "mailto://smtp-user:smtp-password@smtp.example.com:587?to=user@kindle.com&from=you@example.com&format=html"
+]
+```
+
+Notes:
+- Add your sender address (the `from=` value) to your Amazon "Approved Personal Document E-mail List".
+- Many providers require an app-specific password for SMTP.
+- If your SMTP server needs SSL/TLS on 465, use `mailtos://` instead of `mailto://`.
 
 ## Systemd (user mode)
 - Install user unit: `onleiharr --install-as-user-systemd`
