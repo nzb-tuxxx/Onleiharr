@@ -9,7 +9,10 @@ from typing import List
 try:  # Python 3.11+
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None  # type: ignore
+    try:  # Python 3.10 and older: use tomli backport
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover
+        tomllib = None  # type: ignore
 
 
 DEFAULT_FILENAME = "onleiharr.toml"
@@ -39,6 +42,11 @@ class GourouConfig:
     timeout_secs: float
     remove_drm: bool
     remove_drm_ack: str | None
+    # Optional periodic check of "Mein Konto" (lendings) to download ACSM links that
+    # only appear after a reservation is fulfilled. In-memory de-dupe only.
+    lendings_poll_interval_secs: float
+    lendings_download_keywords_only: bool
+    lendings_notify: bool
 
 
 @dataclass
@@ -114,6 +122,11 @@ email = ""
 # timeout_secs = 30.0
 # remove_drm = false  # If true, remove DRM from downloaded PDFs/EPUBs (check local laws)
 # remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
+# Optional: periodically scan "Mein Konto -> Ausgeliehen" to download ACSM for
+# loans that became available later (e.g., fulfilled reservations).
+# lendings_poll_interval_secs = 21600.0
+# lendings_download_keywords_only = true
+# lendings_notify = true
 
 [credentials]
 username = "your-username"
@@ -186,6 +199,25 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     gourou_remove_drm_ack_value = environ.get("ONLEIHARR_GOUROU_ACK_DRM") or gourou_section.get("remove_drm_ack")
     gourou_remove_drm_ack = _optional_str(gourou_remove_drm_ack_value)
 
+    lendings_poll_interval_env = _env_float(environ.get("ONLEIHARR_GOUROU_LENDINGS_POLL_INTERVAL"))
+    lendings_poll_interval = (
+        lendings_poll_interval_env
+        if lendings_poll_interval_env is not None
+        else float(gourou_section.get("lendings_poll_interval_secs", 21600.0))
+    )
+    lendings_keywords_only_env = environ.get("ONLEIHARR_GOUROU_LENDINGS_DOWNLOAD_KEYWORDS_ONLY")
+    lendings_download_keywords_only = (
+        _env_bool(lendings_keywords_only_env)
+        if lendings_keywords_only_env is not None
+        else bool(gourou_section.get("lendings_download_keywords_only", True))
+    )
+    lendings_notify_env = environ.get("ONLEIHARR_GOUROU_LENDINGS_NOTIFY")
+    lendings_notify = (
+        _env_bool(lendings_notify_env)
+        if lendings_notify_env is not None
+        else bool(gourou_section.get("lendings_notify", True))
+    )
+
     gourou = GourouConfig(
         bin_dir=_resolve_optional_path_value(gourou_bin_dir_value, base=path.parent),
         adept_dir=_resolve_optional_path_value(gourou_adept_dir_value, base=path.parent),
@@ -193,6 +225,9 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         timeout_secs=float(gourou_timeout),
         remove_drm=gourou_remove_drm,
         remove_drm_ack=gourou_remove_drm_ack,
+        lendings_poll_interval_secs=float(lendings_poll_interval),
+        lendings_download_keywords_only=lendings_download_keywords_only,
+        lendings_notify=lendings_notify,
     )
 
     general = GeneralConfig(

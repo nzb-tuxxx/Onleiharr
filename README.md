@@ -5,7 +5,7 @@
 ## Overview
 - Monitor Onleihe URLs and notify on new media.
 - Auto-rent or reserve based on keyword filters.
-- Optional auto-downloads via libgourou and DRM removal with explicit acknowledgment.
+- Optional auto-downloads via libgourou (including delayed downloads via "Mein Konto") and DRM removal with explicit acknowledgment.
 - Send media directly to a Kindle via Apprise email/SMTP.
 
 ## Installation (recommended: pipx)
@@ -71,6 +71,10 @@ email = ""
 # timeout_secs = 30.0
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
+# Scan "Mein Konto -> Ausgeliehen" for ACSM links (useful for fulfilled reservations)
+# lendings_poll_interval_secs = 21600.0  # 6h; set to 0 to disable
+# lendings_download_keywords_only = true
+# lendings_notify = true
 
 [credentials]
 username = "your-username"
@@ -100,9 +104,26 @@ How to get your Onleihe URLs
 - `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_LIBRARY`, `ONLEIHARR_LIBRARY_ID`
 - `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, `ONLEIHARR_KEYWORDS`
 - `ONLEIHARR_GOUROU_BIN_DIR`, `ONLEIHARR_GOUROU_ADEPT_DIR`, `ONLEIHARR_GOUROU_DOWNLOAD_DIR`, `ONLEIHARR_GOUROU_TIMEOUT`, `ONLEIHARR_GOUROU_REMOVE_DRM`, `ONLEIHARR_GOUROU_ACK_DRM`
+- `ONLEIHARR_GOUROU_LENDINGS_POLL_INTERVAL`, `ONLEIHARR_GOUROU_LENDINGS_DOWNLOAD_KEYWORDS_ONLY`, `ONLEIHARR_GOUROU_LENDINGS_NOTIFY`
 
 ## libgourou setup (optional)
 libgourou is only needed for automatic downloads and optional DRM removal. Onleiharr can still notify and auto-rent without it.
+
+### Download fulfilled reservations (MyBib / "Mein Konto")
+Onleihe may only expose the ACSM download link once a reservation is fulfilled and the loan shows up under
+"Mein Konto -> Ausgeliehen". Onleiharr can periodically scan that page and download newly borrowed items via libgourou.
+
+Config options (in `[gourou]`):
+- `lendings_poll_interval_secs` (default: `21600.0`; set to `0` to disable)
+- `lendings_download_keywords_only` (default: `true`)
+- `lendings_notify` (default: `true`, sends a dedicated notification when a MyBib download happens, incl. attachment if available)
+
+Notes:
+- Requires libgourou (`acsmdownloader`) to be available; otherwise this feature is disabled.
+- This is in-memory only. On startup, Onleiharr primes the MyBib cache and will not download existing loans.
+- Only entries that expose an ACSM download link are treated as "handled" (reservations without ACSM do not block later downloads).
+- The MyBib scan runs inside the main polling loop, so it will not execute more often than `poll_interval_secs`.
+- Defaults are conservative: by default only items matching your `keywords` are downloaded from MyBib.
 
 Recommended (AppImage):
 1) Download the latest release from https://forge.soutade.fr/soutade/libgourou/releases
@@ -168,6 +189,9 @@ Notes:
 - No apprise URLs configured -> add `[notification].urls` or set `ONLEIHARR_APPRISE_URLS`
 - User systemd not active -> run `loginctl enable-linger $USER`, then reload/enable the unit
 - PATH issues with pipx -> run `pipx ensurepath` and open a new shell
+- If something behaves unexpectedly, reproduce with `--log-level DEBUG` and open an issue with the (redacted) logs.
+  Debug logs may contain sensitive data (e.g. ACSM URLs, tokens, library/user info) - only publish a censored version.
+  If you cannot share logs publicly, you can also send the redacted debug log to the maintainer via email (ask in the issue).
 
 ## Runtime behavior
 - Polls configured URLs, caches known media, sends notifications on new items.

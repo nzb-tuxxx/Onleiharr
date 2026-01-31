@@ -5,3 +5,6 @@ USER_AGENT = (
 )
 
 DEFAULT_HEADERS = {"User-Agent": USER_AGENT}
+
+# Default requests timeout for all HTTP calls to Onleihe pages.
+DEFAULT_TIMEOUT_SECS = 10

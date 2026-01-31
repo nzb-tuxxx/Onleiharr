@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from dataclasses import dataclass
 from functools import wraps
 from typing import Callable, Tuple, TypeVar
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from onleiharr.http import DEFAULT_HEADERS
+from onleiharr.http import DEFAULT_HEADERS, DEFAULT_TIMEOUT_SECS
 from onleiharr.models import Media
 
 logger = logging.getLogger(__name__)
@@ -25,16 +28,32 @@ def handle_exceptions(
     def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            for attempt in range(max_retries + 1):
+            attempts = max_retries + 1
+            for attempt in range(attempts):
                 try:
                     return func(*args, **kwargs)
                 except exception_types as exc:  # type: ignore[misc]
                     if attempt < max_retries:
+                        # Basic exponential backoff with jitter to avoid hammering Onleihe on flaky networks.
+                        delay_secs = min(30.0, (2.0**attempt)) + random.random()
                         logger.warning(
-                            "Attempt %s failed: %s - %s. Retrying...", attempt + 1, type(exc).__name__, exc
+                            "Attempt %d/%d failed: %s - %s. Retrying in %.1fs...",
+                            attempt + 1,
+                            attempts,
+                            type(exc).__name__,
+                            exc,
+                            delay_secs,
                         )
+                        time.sleep(delay_secs)
                     else:
-                        logger.error("All %s attempts failed. Returning default value.", max_retries)
+                        logger.error(
+                            "Attempt %d/%d failed: %s - %s. Returning default value.",
+                            attempt + 1,
+                            attempts,
+                            type(exc).__name__,
+                            exc,
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
             return default_value
 
         return wrapper  # type: ignore[return-value]
@@ -77,7 +96,14 @@ def extract_acsm_url(html: str) -> str | None:
 
 
 class Onleihe:
-    def __init__(self, library: str, library_id: int, username: str, password: str, timeout: int = 10):
+    def __init__(
+        self,
+        library: str,
+        library_id: int,
+        username: str,
+        password: str,
+        timeout: int = DEFAULT_TIMEOUT_SECS,
+    ):
         # Create a session to be used for all requests
         self.library = library
         self.library_id = library_id
@@ -103,7 +129,11 @@ class Onleihe:
         if not form:
             raise LoginError("Login form could not be found.")
 
-        form_url = str(form['action'])
+        action = form.get('action')
+        if not action:
+            raise LoginError("Login form action URL could not be found.")
+        # Onleihe sometimes returns a relative form action; resolve it against the fetched page URL.
+        form_url = urljoin(response.url, str(action))
         form_data = {input_tag['name']: input_tag.get('value', '') for input_tag in
                      form.find_all('input', {'name': True})}
 
@@ -117,13 +147,28 @@ class Onleihe:
 
         # Check if login was successful
         soup_post = BeautifulSoup(response_post.text, 'html.parser')
-        error_message = soup_post.find('span')
-        success_message = soup_post.find('h3', class_='headline my-4')
 
-        if error_message and isinstance(error_message, Tag) and error_message.get_text(strip=True).startswith("danger:"):
-            raise LoginError("The login attempt was unsuccessful. Please check your login details and try again.")
+        # Some Onleihe variants show login errors as a "danger:" span and keep the login form.
+        danger_text: str | None = None
+        for span in soup_post.find_all('span'):
+            if not isinstance(span, Tag):
+                continue
+            text = span.get_text(strip=True)
+            if text.startswith("danger:"):
+                danger_text = text
+                break
+
+        if soup_post.find('form', id='loginForm'):
+            raise LoginError(
+                danger_text
+                or "The login attempt was unsuccessful. Please check your login details and try again."
+            )
+
+        # Not all variants include a stable "success" marker; if we are not on the login page
+        # anymore, treat this as a successful login.
+        success_message = soup_post.find('h3', class_='headline my-4')
         if not success_message:
-            raise LoginError("Unable to determine if the login was successful.")
+            logger.debug("Login POST did not contain an explicit success marker; proceeding anyway.")
 
         # Return the response
         return response_post.text
@@ -177,6 +222,28 @@ class Onleihe:
 
     @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
     def fetch_acsm(self, url: str) -> bytes | None:
-        response = self.session.get(url, timeout=self.timeout)
+        normalized = self._normalize_url(url)
+        response = self.session.get(normalized, timeout=self.timeout)
         response.raise_for_status()
         return response.content
+
+    @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
+    def fetch_my_bib_lendings(self, login: bool = True) -> str | None:
+        if login:
+            self.login()
+        url = (
+            f"https://www.onleihe.de/{self.library}/frontend/"
+            "myBib,0-0-0-100-0-0-0-0-0-0-0.html"
+        )
+        response = self.session.get(url, timeout=self.timeout)
+        response.raise_for_status()
+        return response.text
+
+    def _normalize_url(self, href: str) -> str:
+        href = (href or "").strip()
+        if href.startswith("http://") or href.startswith("https://"):
+            return href
+        if href.startswith("/"):
+            return urljoin("https://www.onleihe.de", href)
+        # Relative links in Onleihe HTML are usually relative to the frontend base.
+        return urljoin(f"https://www.onleihe.de/{self.library}/frontend/", href)
