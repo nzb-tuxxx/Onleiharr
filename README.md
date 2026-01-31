@@ -1,6 +1,6 @@
 # Onleiharr
 
-![Telegram Notification](images/onleiharr_telegram.jpg)
+![Telegram Notification](https://raw.githubusercontent.com/nzb-tuxxx/Onleiharr/main/images/onleiharr_telegram.jpg)
 
 ## Overview
 - Monitor Onleihe URLs and notify on new media.
