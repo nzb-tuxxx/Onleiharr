@@ -75,7 +75,13 @@ def default_config_path() -> Path:
         return base / "onleiharr" / DEFAULT_FILENAME
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "onleiharr" / DEFAULT_FILENAME
-    return Path.home() / ".config" / "onleiharr" / DEFAULT_FILENAME
+    user_path = Path.home() / ".config" / "onleiharr" / DEFAULT_FILENAME
+    system_path = Path("/etc/onleiharr") / DEFAULT_FILENAME
+    if user_path.exists():
+        return user_path
+    if system_path.exists():
+        return system_path
+    return user_path
 
 
 def ensure_default_config(path: Path) -> None:

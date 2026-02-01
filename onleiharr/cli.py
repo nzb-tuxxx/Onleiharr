@@ -127,9 +127,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def setup_logging(level: str) -> None:
+    format_string = (
+        "%(levelname)s %(name)s: %(message)s"
+        if os.getenv("JOURNAL_STREAM") or os.getenv("INVOCATION_ID")
+        else "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
     logging.basicConfig(
         level=getattr(logging, level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=format_string,
     )
 
 
