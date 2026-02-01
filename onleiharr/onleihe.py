@@ -113,13 +113,26 @@ class Onleihe:
         self.session.headers.update(DEFAULT_HEADERS)
         self.timeout = timeout
 
+    def _new_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(DEFAULT_HEADERS)
+        return session
+
+    def _close_session(self, session: requests.Session) -> None:
+        try:
+            session.close()
+        except Exception:
+            # Best-effort close; ignore errors during teardown.
+            pass
+
     @handle_exceptions(exception_types=(requests.RequestException, LoginError))
-    def login(self):
+    def login(self, session: requests.Session | None = None):
+        target_session = session or self.session
         # URL of the page with the login form
         url = f'https://www.onleihe.de/{self.library}/frontend/login,0-0-0-800-0-0-0-0-0-0-0.html?libraryId={self.library_id}'
 
         # Step 1: Fetch the page
-        response = self.session.get(url, timeout=self.timeout)
+        response = target_session.get(url, timeout=self.timeout)
         response.raise_for_status()  # Ensure the request was successful
 
         # Step 2: Parse the HTML and extract form information
@@ -142,7 +155,7 @@ class Onleihe:
         form_data['password'] = self.password
 
         # Step 3: Send the POST request
-        response_post = self.session.post(form_url, data=form_data, timeout=self.timeout)
+        response_post = target_session.post(form_url, data=form_data, timeout=self.timeout)
         response_post.raise_for_status()  # Ensure the request was successful
 
         # Check if login was successful
@@ -229,15 +242,19 @@ class Onleihe:
 
     @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
     def fetch_my_bib_lendings(self, login: bool = True) -> str | None:
-        if login:
-            self.login()
-        url = (
-            f"https://www.onleihe.de/{self.library}/frontend/"
-            "myBib,0-0-0-100-0-0-0-0-0-0-0.html"
-        )
-        response = self.session.get(url, timeout=self.timeout)
-        response.raise_for_status()
-        return response.text
+        session = self._new_session()
+        try:
+            if login:
+                self.login(session=session)
+            url = (
+                f"https://www.onleihe.de/{self.library}/frontend/"
+                "myBib,0-0-0-100-0-0-0-0-0-0-0.html"
+            )
+            response = session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            return response.text
+        finally:
+            self._close_session(session)
 
     def _normalize_url(self, href: str) -> str:
         href = (href or "").strip()
