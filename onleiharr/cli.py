@@ -337,7 +337,7 @@ def format_my_bib_download_message(library: str, lending: MyBibLending) -> str:
         link = f"<a href=\"{url}\">{title}</a>"
     else:
         link = title
-    return f"[MYBIB] <b>{link}</b> auto downloaded (from 'Mein Konto / Ausgeliehen')"
+    return f"[MYBIB] <b>{link}</b> auto downloaded"
 
 
 def _looks_like_login_page(html: str) -> bool:
