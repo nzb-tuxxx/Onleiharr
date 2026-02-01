@@ -152,10 +152,18 @@ def extract_magazine_info(magazine_element: Tag | BeautifulSoup, library: str) -
     )
 
 
-def fetch_media(url: str, elements: int = 50, timeout: int = DEFAULT_TIMEOUT_SECS) -> Iterator[Media]:
+def fetch_media(
+    url: str,
+    elements: int = 50,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+    session: requests.Session | None = None,
+) -> Iterator[Media]:
     data = {'elementsPerPage': str(elements)}
 
-    response = requests.post(url, data=data, timeout=timeout, headers=DEFAULT_HEADERS)
+    if session is None:
+        response = requests.post(url, data=data, timeout=timeout, headers=DEFAULT_HEADERS)
+    else:
+        response = session.post(url, data=data, timeout=timeout, headers=DEFAULT_HEADERS)
     response.raise_for_status()
 
     library = url.split('/')[3]

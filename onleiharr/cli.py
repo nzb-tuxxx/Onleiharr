@@ -13,6 +13,7 @@ from random import choice
 from typing import Iterable, Set
 
 import apprise
+import requests
 from requests.exceptions import RequestException
 
 from onleiharr.config import (
@@ -449,223 +450,232 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     first_run = True
     test_notify = args.test_notification or config.notification.test_notification
 
-    while True:
-        try:
-            current_media_list: list[Media] = []
-            current_media: Set[Media] = set()
-            fetch_elements = 100 if first_run else 50
-            for url in config.general.urls:
-                try:
-                    url_media = list(fetch_media(url, elements=fetch_elements))
-                    logger.debug("Fetched %d media items from %s", len(url_media), url)
-                    if not url_media:
-                        logger.warning("No media found for url; check configuration: %s", url)
-                    current_media_list.extend(url_media)
-                except RequestException as exc:
-                    logger.error("Network error while processing url %s: %s", url, exc)
-                except Exception as exc:
-                    logger.exception("Unexpected error while processing url %s: %s", url, exc)
-
-            if current_media_list:
-                current_media = set(current_media_list)
-
-            if first_run:
-                logger.info(
-                    "Primed media cache with %d media items (first run); now polling every %d seconds",
-                    len(current_media),
-                    int(config.general.poll_interval_secs),
-                )
-                if logger.isEnabledFor(logging.DEBUG):
-                    for media in current_media:
-                        logger.debug("[CACHE] %s", media)
-                known_media = current_media
-                first_run = False
-
-                if test_notify:
-                    if current_media_list:
-                        last_media = current_media_list[-1]
-                        logger.info("Test notification mode: sending notify for '%s'.", last_media.title)
-                        notify_message = format_message(last_media, "test notification")
-                        notify(apobj, notify_message)
-                    else:
-                        logger.warning("Test notification requested but no media found on first run.")
-            else:
-                new_media = current_media - known_media
-                if new_media:
-                    logger.info("Found %d new media items", len(new_media))
-                else:
-                    logger.debug("No new media found this cycle")
-                for media in new_media:
+    catalog_session = requests.Session()
+    try:
+        while True:
+            try:
+                current_media_list: list[Media] = []
+                current_media: Set[Media] = set()
+                fetch_elements = 100 if first_run else 50
+                for url in config.general.urls:
                     try:
-                        auto_rent = False
-                        auto_reserve = False
-                        download_path: Path | None = None
-                        if matches_filter(media.title, keywords):
-                            logger.info("%s matches filter", media.title)
-                            if media.available:
-                                logger.info("%s is available, attempting auto rent", media.title)
-                                if media.id in rented_media_ids:
-                                    logger.debug("Media id %s already rented in this run; skipping.", media.id)
-                                else:
-                                    rent_result = onleihe.rent_media(media)
-                                    if rent_result:
-                                        auto_rent = True
-                                        rented_media_ids.add(media.id)
-                                        if media.format != "audio":
-                                            if media.id in downloaded_media_ids:
-                                                logger.debug(
-                                                    "Media id %s already downloaded in this run; skipping.",
-                                                    media.id,
-                                                )
-                                            else:
-                                                downloaded, download_path = download_media_with_gourou(
-                                                    media, rent_result, onleihe, gourou_client
-                                                )
-                                                if downloaded:
-                                                    downloaded_media_ids.add(media.id)
-                                        else:
-                                            logger.info("Skipping download for audio media '%s'.", media.title)
-                            else:
-                                logger.info("%s is unavailable, attempting to reserve", media.title)
-                                onleihe.reserve_media(media, config.notification.email or "")
-                                auto_reserve = True
-
-                        if auto_rent:
-                            availability_message = "auto rented :)"
-                        elif auto_reserve:
-                            availability_message = f"auto reserved - available at <b>{media.availability_date}</b>"
-                        elif media.available:
-                            availability_message = "available"
-                        else:
-                            availability_message = f"not available until <b>{media.availability_date}</b>"
-
-                        notify_message = format_message(media, availability_message)
-                        logger.info("Notify: %s", notify_message)
-                        notify(
-                            apobj,
-                            notify_message,
-                            attachments=[download_path] if download_path else None,
-                        )
+                        url_media = list(fetch_media(url, elements=fetch_elements, session=catalog_session))
+                        logger.debug("Fetched %d media items from %s", len(url_media), url)
+                        if not url_media:
+                            logger.warning("No media found for url; check configuration: %s", url)
+                        current_media_list.extend(url_media)
+                    except RequestException as exc:
+                        logger.error("Network error while processing url %s: %s", url, exc)
                     except Exception as exc:
-                        logger.exception("Error handling media '%s': %s", media.title, exc)
+                        logger.exception("Unexpected error while processing url %s: %s", url, exc)
 
-                known_media.update(new_media)
+                if current_media_list:
+                    current_media = set(current_media_list)
 
-            # Periodically scan "Mein Konto / Ausgeliehen" to download ACSM links that only appear
-            # after a reservation was fulfilled (i.e., loan is now active).
-            if lendings_enabled and lendings_next_check_ts is not None:
-                now = time.monotonic()
-                if now >= lendings_next_check_ts:
-                    retry_secs = min(600.0, lendings_interval_secs)
-                    if not lendings_cache_primed:
-                        primed, primed_count = prime_my_bib_lendings_cache(onleihe, downloaded_media_ids)
-                        if primed:
-                            lendings_cache_primed = True
-                            lendings_next_check_ts = now + lendings_interval_secs
-                            logger.info(
-                                "Primed MyBib lendings cache with %d items; next scan in %d seconds",
-                                primed_count,
-                                int(lendings_interval_secs),
-                            )
+                if first_run:
+                    logger.info(
+                        "Primed media cache with %d media items (first run); now polling every %d seconds",
+                        len(current_media),
+                        int(config.general.poll_interval_secs),
+                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        for media in current_media:
+                            logger.debug("[CACHE] %s", media)
+                    known_media = current_media
+                    first_run = False
+
+                    if test_notify:
+                        if current_media_list:
+                            last_media = current_media_list[-1]
+                            logger.info("Test notification mode: sending notify for '%s'.", last_media.title)
+                            notify_message = format_message(last_media, "test notification")
+                            notify(apobj, notify_message)
                         else:
-                            lendings_next_check_ts = now + retry_secs
-                            logger.warning(
-                                "Failed to prime MyBib lendings cache (not logged in or network error). "
-                                "Will retry in %ds.",
-                                int(retry_secs),
-                            )
+                            logger.warning("Test notification requested but no media found on first run.")
+                else:
+                    new_media = current_media - known_media
+                    if new_media:
+                        logger.info("Found %d new media items", len(new_media))
                     else:
-                        html = onleihe.fetch_my_bib_lendings()
-                        if not html:
-                            logger.warning("Failed to fetch MyBib lendings page; skipping this scan.")
-                            lendings_next_check_ts = now + retry_secs
-                        elif _looks_like_login_page(html):
-                            logger.warning("MyBib lendings page looks like a login page; skipping this scan.")
-                            lendings_next_check_ts = now + retry_secs
-                        else:
-                            lendings = parse_my_bib_lendings(html)
-                            total = len(lendings)
-                            with_acsm = sum(1 for lending in lendings if lending.acsm_url)
-                            logger.debug("MyBib scan: parsed %d entries (%d with ACSM)", total, with_acsm)
-
-                            skipped_known = 0
-                            skipped_keywords = 0
-                            skipped_no_acsm = 0
-                            attempted = 0
-                            downloaded_ok = 0
-                            downloaded_failed = 0
-                            notified = 0
-
-                            for lending in lendings:
-                                if lending.media_id in downloaded_media_ids:
-                                    skipped_known += 1
-                                    continue
-                                if (
-                                    config.gourou.lendings_download_keywords_only
-                                    and (not lending.title or not matches_filter(lending.title, keywords))
-                                ):
-                                    skipped_keywords += 1
-                                    logger.debug(
-                                        "MyBib lending '%s' does not match keywords; skipping.",
-                                        lending.title or lending.media_id,
-                                    )
-                                    continue
-                                if not lending.acsm_url:
-                                    skipped_no_acsm += 1
-                                    logger.debug(
-                                        "No ACSM URL found for MyBib lending '%s' (id %s); download skipped.",
-                                        lending.title or "",
-                                        lending.media_id,
-                                    )
-                                    continue
-
-                                attempted += 1
-                                downloaded, lending_download_path = download_acsm_with_gourou(
-                                    media_id=lending.media_id,
-                                    title=lending.title or f"media id {lending.media_id}",
-                                    acsm_url=lending.acsm_url,
-                                    onleihe=onleihe,
-                                    gourou_client=gourou_client,
-                                )
-                                if downloaded:
-                                    downloaded_media_ids.add(lending.media_id)
-                                    downloaded_ok += 1
-                                    if config.gourou.lendings_notify:
-                                        notify_message = format_my_bib_download_message(
-                                            config.credentials.library, lending
-                                        )
-                                        logger.info("Notify (MyBib): %s", notify_message)
-                                        notify(
-                                            apobj,
-                                            notify_message,
-                                            attachments=[lending_download_path]
-                                            if lending_download_path
-                                            else None,
-                                        )
-                                        notified += 1
+                        logger.debug("No new media found this cycle")
+                    for media in new_media:
+                        try:
+                            auto_rent = False
+                            auto_reserve = False
+                            download_path: Path | None = None
+                            if matches_filter(media.title, keywords):
+                                logger.info("%s matches filter", media.title)
+                                if media.available:
+                                    logger.info("%s is available, attempting auto rent", media.title)
+                                    if media.id in rented_media_ids:
+                                        logger.debug("Media id %s already rented in this run; skipping.", media.id)
+                                    else:
+                                        rent_result = onleihe.rent_media(media)
+                                        if rent_result:
+                                            auto_rent = True
+                                            rented_media_ids.add(media.id)
+                                            if media.format != "audio":
+                                                if media.id in downloaded_media_ids:
+                                                    logger.debug(
+                                                        "Media id %s already downloaded in this run; skipping.",
+                                                        media.id,
+                                                    )
+                                                else:
+                                                    downloaded, download_path = download_media_with_gourou(
+                                                        media, rent_result, onleihe, gourou_client
+                                                    )
+                                                    if downloaded:
+                                                        downloaded_media_ids.add(media.id)
+                                            else:
+                                                logger.info("Skipping download for audio media '%s'.", media.title)
                                 else:
-                                    downloaded_failed += 1
+                                    logger.info("%s is unavailable, attempting to reserve", media.title)
+                                    onleihe.reserve_media(media, config.notification.email or "")
+                                    auto_reserve = True
 
-                            logger.debug(
-                                "MyBib scan: attempted=%d downloaded=%d failed=%d skipped_known=%d skipped_keywords=%d skipped_no_acsm=%d notified=%d; next scan in %d seconds",
-                                attempted,
-                                downloaded_ok,
-                                downloaded_failed,
-                                skipped_known,
-                                skipped_keywords,
-                                skipped_no_acsm,
-                                notified,
-                                int(lendings_interval_secs),
+                            if auto_rent:
+                                availability_message = "auto rented :)"
+                            elif auto_reserve:
+                                availability_message = (
+                                    f"auto reserved - available at <b>{media.availability_date}</b>"
+                                )
+                            elif media.available:
+                                availability_message = "available"
+                            else:
+                                availability_message = f"not available until <b>{media.availability_date}</b>"
+
+                            notify_message = format_message(media, availability_message)
+                            logger.info("Notify: %s", notify_message)
+                            notify(
+                                apobj,
+                                notify_message,
+                                attachments=[download_path] if download_path else None,
                             )
-                            lendings_next_check_ts = now + lendings_interval_secs
-        except Exception as exc:
-            logger.exception("Unhandled error in polling loop: %s", exc)
+                        except Exception as exc:
+                            logger.exception("Error handling media '%s': %s", media.title, exc)
 
-        if args.once:
-            logger.info("--once set; exiting after first iteration")
-            break
+                    known_media.update(new_media)
 
-        time.sleep(config.general.poll_interval_secs)
+                # Periodically scan "Mein Konto / Ausgeliehen" to download ACSM links that only appear
+                # after a reservation was fulfilled (i.e., loan is now active).
+                if lendings_enabled and lendings_next_check_ts is not None:
+                    now = time.monotonic()
+                    if now >= lendings_next_check_ts:
+                        retry_secs = min(600.0, lendings_interval_secs)
+                        if not lendings_cache_primed:
+                            primed, primed_count = prime_my_bib_lendings_cache(onleihe, downloaded_media_ids)
+                            if primed:
+                                lendings_cache_primed = True
+                                lendings_next_check_ts = now + lendings_interval_secs
+                                logger.info(
+                                    "Primed MyBib lendings cache with %d items; next scan in %d seconds",
+                                    primed_count,
+                                    int(lendings_interval_secs),
+                                )
+                            else:
+                                lendings_next_check_ts = now + retry_secs
+                                logger.warning(
+                                    "Failed to prime MyBib lendings cache (not logged in or network error). "
+                                    "Will retry in %ds.",
+                                    int(retry_secs),
+                                )
+                        else:
+                            html = onleihe.fetch_my_bib_lendings()
+                            if not html:
+                                logger.warning("Failed to fetch MyBib lendings page; skipping this scan.")
+                                lendings_next_check_ts = now + retry_secs
+                            elif _looks_like_login_page(html):
+                                logger.warning("MyBib lendings page looks like a login page; skipping this scan.")
+                                lendings_next_check_ts = now + retry_secs
+                            else:
+                                lendings = parse_my_bib_lendings(html)
+                                total = len(lendings)
+                                with_acsm = sum(1 for lending in lendings if lending.acsm_url)
+                                logger.debug("MyBib scan: parsed %d entries (%d with ACSM)", total, with_acsm)
+
+                                skipped_known = 0
+                                skipped_keywords = 0
+                                skipped_no_acsm = 0
+                                attempted = 0
+                                downloaded_ok = 0
+                                downloaded_failed = 0
+                                notified = 0
+
+                                for lending in lendings:
+                                    if lending.media_id in downloaded_media_ids:
+                                        skipped_known += 1
+                                        continue
+                                    if (
+                                        config.gourou.lendings_download_keywords_only
+                                        and (not lending.title or not matches_filter(lending.title, keywords))
+                                    ):
+                                        skipped_keywords += 1
+                                        logger.debug(
+                                            "MyBib lending '%s' does not match keywords; skipping.",
+                                            lending.title or lending.media_id,
+                                        )
+                                        continue
+                                    if not lending.acsm_url:
+                                        skipped_no_acsm += 1
+                                        logger.debug(
+                                            "No ACSM URL found for MyBib lending '%s' (id %s); download skipped.",
+                                            lending.title or "",
+                                            lending.media_id,
+                                        )
+                                        continue
+
+                                    attempted += 1
+                                    downloaded, lending_download_path = download_acsm_with_gourou(
+                                        media_id=lending.media_id,
+                                        title=lending.title or f"media id {lending.media_id}",
+                                        acsm_url=lending.acsm_url,
+                                        onleihe=onleihe,
+                                        gourou_client=gourou_client,
+                                    )
+                                    if downloaded:
+                                        downloaded_media_ids.add(lending.media_id)
+                                        downloaded_ok += 1
+                                        if config.gourou.lendings_notify:
+                                            notify_message = format_my_bib_download_message(
+                                                config.credentials.library, lending
+                                            )
+                                            logger.info("Notify (MyBib): %s", notify_message)
+                                            notify(
+                                                apobj,
+                                                notify_message,
+                                                attachments=[lending_download_path]
+                                                if lending_download_path
+                                                else None,
+                                            )
+                                            notified += 1
+                                    else:
+                                        downloaded_failed += 1
+
+                                logger.debug(
+                                    "MyBib scan: attempted=%d downloaded=%d failed=%d skipped_known=%d skipped_keywords=%d skipped_no_acsm=%d notified=%d; next scan in %d seconds",
+                                    attempted,
+                                    downloaded_ok,
+                                    downloaded_failed,
+                                    skipped_known,
+                                    skipped_keywords,
+                                    skipped_no_acsm,
+                                    notified,
+                                    int(lendings_interval_secs),
+                                )
+                                lendings_next_check_ts = now + lendings_interval_secs
+            except Exception as exc:
+                logger.exception("Unhandled error in polling loop: %s", exc)
+
+            if args.once:
+                logger.info("--once set; exiting after first iteration")
+                break
+
+            time.sleep(config.general.poll_interval_secs)
+    finally:
+        try:
+            catalog_session.close()
+        except Exception:
+            logger.debug("Failed to close catalog session.", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> int:
