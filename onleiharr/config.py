@@ -39,6 +39,7 @@ class GourouConfig:
     bin_dir: Path | None
     adept_dir: Path | None
     download_dir: Path | None
+    download_permissions: int | None
     timeout_secs: float
     remove_drm: bool
     remove_drm_ack: str | None
@@ -125,6 +126,8 @@ email = ""
 # adept_dir = "~/.config/adept"
 # Optional default download directory for fulfilled files
 # download_dir = "~/Downloads/Onleiharr"
+# Optional file permissions (octal) to apply after download/DRM removal
+# download_permissions = "0644"
 # timeout_secs = 30.0
 # remove_drm = false  # If true, remove DRM from downloaded PDFs/EPUBs (check local laws)
 # remove_drm_ack = "I_UNDERSTAND"  # Required to enable DRM removal
@@ -192,6 +195,10 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     gourou_bin_dir_value = environ.get("ONLEIHARR_GOUROU_BIN_DIR") or gourou_section.get("bin_dir")
     gourou_adept_dir_value = environ.get("ONLEIHARR_GOUROU_ADEPT_DIR") or gourou_section.get("adept_dir")
     gourou_download_dir_value = environ.get("ONLEIHARR_GOUROU_DOWNLOAD_DIR") or gourou_section.get("download_dir")
+    gourou_permissions_value = (
+        environ.get("ONLEIHARR_GOUROU_DOWNLOAD_PERMISSIONS")
+        or gourou_section.get("download_permissions")
+    )
 
     gourou_timeout = _env_float(environ.get("ONLEIHARR_GOUROU_TIMEOUT")) or gourou_section.get(
         "timeout_secs", 30.0
@@ -228,6 +235,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         bin_dir=_resolve_optional_path_value(gourou_bin_dir_value, base=path.parent),
         adept_dir=_resolve_optional_path_value(gourou_adept_dir_value, base=path.parent),
         download_dir=_resolve_optional_path_value(gourou_download_dir_value, base=path.parent),
+        download_permissions=_parse_permissions(gourou_permissions_value),
         timeout_secs=float(gourou_timeout),
         remove_drm=gourou_remove_drm,
         remove_drm_ack=gourou_remove_drm_ack,
@@ -294,6 +302,30 @@ def _env_bool(raw: str | None) -> bool:
     if raw is None:
         return False
     return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_permissions(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ConfigError("Invalid download_permissions value; expected octal string like 0644.")
+    if isinstance(value, int):
+        if value <= 0o777:
+            return value
+        if value <= 777:
+            return int(str(value), 8)
+        raise ConfigError("Invalid download_permissions value; use 0644/0o644 or an integer <= 0o777.")
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return int(raw, 8)
+        except ValueError as exc:
+            raise ConfigError(
+                "Invalid download_permissions value; use octal like 0644 or 0o644."
+            ) from exc
+    raise ConfigError("Invalid download_permissions value type.")
 
 
 def _resolve_path(value: str | None, base: Path) -> Path:

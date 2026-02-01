@@ -262,6 +262,22 @@ def download_acsm_with_gourou(
                             "DRM removal enabled but file is not PDF/EPUB; skipping %s.",
                             result.output_path,
                         )
+                if gourou_client.config.download_permissions is not None:
+                    permissions = gourou_client.config.download_permissions
+                    try:
+                        result.output_path.chmod(permissions)
+                        logger.info(
+                            "Set permissions %s for %s.",
+                            f"{permissions:04o}",
+                            result.output_path,
+                        )
+                    except OSError as exc:
+                        logger.warning(
+                            "Failed to set permissions %s for %s: %s",
+                            f"{permissions:04o}",
+                            result.output_path,
+                            exc,
+                        )
             else:
                 # Don't treat this as a successful download - we would otherwise suppress retries
                 # and potentially send a misleading notification.
