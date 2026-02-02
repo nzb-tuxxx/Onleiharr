@@ -1,8 +1,7 @@
 # Onleiharr
 
-![Telegram Notification](https://raw.githubusercontent.com/nzb-tuxxx/Onleiharr/main/images/onleiharr_telegram.jpg)
+Onleiharr lets you automatically download your favorite media like magazines and books from Onleihe to read with any PDF/EPUB reader on Linux.
 
-## Overview
 - Monitor Onleihe URLs and notify on new media.
 - Auto-rent or reserve based on keyword filters.
 - Optional auto-downloads via libgourou (including delayed downloads via "Mein Konto") and DRM removal with explicit acknowledgment.
@@ -147,6 +146,7 @@ Onleiharr does not include DRM removal code; it only invokes a third-party tool 
 Onleiharr developers accept no liability for misuse. See `DISCLAIMER.md` for details.
 
 ### Notifications (Apprise)
+![Telegram Notification](https://raw.githubusercontent.com/nzb-tuxxx/Onleiharr/main/images/onleiharr_telegram.jpg)
 - Preferred: set `[notification].urls` (Telegram, Discord, Slack, etc.).
 - Legacy: `apprise.yml` is still supported via `[notification].apprise_config_path`.
 
