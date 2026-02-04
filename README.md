@@ -25,6 +25,12 @@ Install/Upgrade onleiharr:
 - Run directly: `python3 main.py` (auto-creates config on first run)
 - Or run as module: `python3 -m onleiharr`
 
+## Installation (Arch Linux AUR)
+Onleiharr is also available as an AUR package:
+- https://aur.archlinux.org/packages/onleiharr
+- Install with `yay`: `yay -S onleiharr`
+- Install with `paru`: `paru -S onleiharr`
+
 ## Quick start
 1) Create/edit config: run once to auto-create a template if missing:
    `onleiharr --once`
