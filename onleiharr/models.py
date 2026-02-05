@@ -69,6 +69,7 @@ class MyBibLending:
     title: str
     media_info_href: str | None
     acsm_url: str | None
+    lend_href: str | None
 
 
 @dataclass

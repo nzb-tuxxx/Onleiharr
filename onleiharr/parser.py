@@ -46,6 +46,16 @@ def extract_acsm_url_from_card(card: Tag) -> str | None:
     return str(href) if href else None
 
 
+def extract_lend_href_from_card(card: Tag) -> str | None:
+    link = card.select_one('a[test-id="mediaLendButton"][href]')
+    if not link:
+        link = card.find("a", href=lambda value: value and "reservationLend" in value)
+    if not link:
+        return None
+    href = link.get("href")
+    return str(href) if href else None
+
+
 def parse_my_bib_lendings(html: str) -> list[MyBibLending]:
     soup = BeautifulSoup(html, "html.parser")
     by_id: dict[int, MyBibLending] = {}
@@ -61,21 +71,26 @@ def parse_my_bib_lendings(html: str) -> list[MyBibLending]:
 
         title = get_card_title(card) or ""
         acsm_url = extract_acsm_url_from_card(card)
+        lend_href = extract_lend_href_from_card(card)
 
         candidate = MyBibLending(
             media_id=media_id,
             title=title,
             media_info_href=href,
             acsm_url=acsm_url,
+            lend_href=lend_href,
         )
         existing = by_id.get(media_id)
         if existing is None:
             by_id[media_id] = candidate
         else:
             # If the same media id appears multiple times (e.g., in reservations and lendings),
-            # prefer the entry that actually contains an ACSM download link.
+            # prefer the entry that contains an ACSM download link, then a lend button.
             if existing.acsm_url is None and candidate.acsm_url is not None:
                 by_id[media_id] = candidate
+            elif existing.acsm_url is None and candidate.acsm_url is None:
+                if existing.lend_href is None and candidate.lend_href is not None:
+                    by_id[media_id] = candidate
 
     return list(by_id.values())
 

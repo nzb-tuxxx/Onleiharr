@@ -188,26 +188,12 @@ class Onleihe:
 
     @handle_exceptions(exception_types=(requests.RequestException, RentError))
     def rent_media(self, media: Media, lend_period: int = 2, login: bool = True) -> RentResult | None:
-        if login:
-            self.login()
-
-        rent_url = f"https://www.onleihe.de/{self.library}/frontend/mediaLend,0-0-{media.id}-303-0-0-0-0-0-0-0.html"
-
-        data = {
-            'pVersionId': str(media.id),
-            'pLendPeriod': str(lend_period)
-        }
-
-        response = self.session.post(rent_url, data=data, timeout=self.timeout)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        error_paragraph = soup.find('p', class_='text-center mb-0')
-        if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
-            raise RentError("An unexpected error occurred while trying to rent the media. Please try again later.")
-
-        acsm_url = extract_acsm_url(response.text)
-        return RentResult(html=response.text, acsm_url=acsm_url)
+        return self._rent_media_by_id(
+            media_id=media.id,
+            lend_period=lend_period,
+            session=self.session,
+            login=login,
+        )
 
     @handle_exceptions(exception_types=(requests.RequestException, ReserveError))
     def reserve_media(self, media: Media, email: str | None = None, login: bool = True):
@@ -233,6 +219,41 @@ class Onleihe:
 
         return response.text
 
+    @handle_exceptions(exception_types=(requests.RequestException, RentError))
+    def lend_reservation(self, href: str, login: bool = True) -> RentResult | None:
+        session = self._new_session()
+        try:
+            if login:
+                self.login(session=session)
+
+            lend_url = self._normalize_url(href)
+            response = session.get(lend_url, timeout=self.timeout)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            error_paragraph = soup.find('p', class_='text-center mb-0')
+            if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
+                raise RentError(
+                    "An unexpected error occurred while trying to lend the reservation. Please try again later."
+                )
+
+            acsm_url = extract_acsm_url(response.text)
+            if acsm_url:
+                return RentResult(html=response.text, acsm_url=acsm_url)
+
+            media_id = Media.parse_id_from_href(href)
+            if media_id is None:
+                return RentResult(html=response.text, acsm_url=None)
+
+            return self._rent_media_by_id(
+                media_id=media_id,
+                lend_period=2,
+                session=session,
+                login=False,
+            )
+        finally:
+            self._close_session(session)
+
     @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
     def fetch_acsm(self, url: str) -> bytes | None:
         normalized = self._normalize_url(url)
@@ -255,6 +276,35 @@ class Onleihe:
             return response.text
         finally:
             self._close_session(session)
+
+    def _rent_media_by_id(
+        self,
+        media_id: int,
+        lend_period: int,
+        session: requests.Session,
+        login: bool,
+    ) -> RentResult:
+        if login:
+            self.login(session=session)
+
+        rent_url = (
+            f"https://www.onleihe.de/{self.library}/frontend/mediaLend,0-0-{media_id}-303-0-0-0-0-0-0-0.html"
+        )
+        data = {
+            'pVersionId': str(media_id),
+            'pLendPeriod': str(lend_period),
+        }
+
+        response = session.post(rent_url, data=data, timeout=self.timeout)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        error_paragraph = soup.find('p', class_='text-center mb-0')
+        if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
+            raise RentError("An unexpected error occurred while trying to rent the media. Please try again later.")
+
+        acsm_url = extract_acsm_url(response.text)
+        return RentResult(html=response.text, acsm_url=acsm_url)
 
     def _normalize_url(self, href: str) -> str:
         href = (href or "").strip()
