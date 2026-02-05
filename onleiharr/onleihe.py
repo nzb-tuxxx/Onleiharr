@@ -119,7 +119,16 @@ class Onleihe:
         if "text/html" not in content_type:
             return False
         html = response.text or ""
-        return 'id="loginForm"' in html or "id='loginForm'" in html
+        lowered = html.lower()
+        if 'id="loginform"' in lowered or "id='loginform'" in lowered:
+            return True
+        if "anmeldung" in lowered and "bibliothekauswahl" in lowered:
+            return True
+        if "login,0-0-0-800" in lowered and "test-id=\"loginbutton\"" in lowered:
+            return True
+        if "login,0-0-0-800" in lowered and "test-id='loginbutton'" in lowered:
+            return True
+        return False
 
     def _request_with_login(
         self,
