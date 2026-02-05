@@ -113,17 +113,30 @@ class Onleihe:
         self.session.headers.update(DEFAULT_HEADERS)
         self.timeout = timeout
 
-    def _new_session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update(DEFAULT_HEADERS)
-        return session
+    @staticmethod
+    def _looks_like_login_page(response: requests.Response) -> bool:
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" not in content_type:
+            return False
+        html = response.text or ""
+        return 'id="loginForm"' in html or "id='loginForm'" in html
 
-    def _close_session(self, session: requests.Session) -> None:
-        try:
-            session.close()
-        except Exception:
-            # Best-effort close; ignore errors during teardown.
-            pass
+    def _request_with_login(
+        self,
+        method: str,
+        url: str,
+        *,
+        data: dict[str, str] | None = None,
+        session: requests.Session | None = None,
+    ) -> requests.Response:
+        target_session = session or self.session
+        response = target_session.request(method, url, data=data, timeout=self.timeout)
+        response.raise_for_status()
+        if self._looks_like_login_page(response):
+            self.login(session=target_session)
+            response = target_session.request(method, url, data=data, timeout=self.timeout)
+            response.raise_for_status()
+        return response
 
     @handle_exceptions(exception_types=(requests.RequestException, LoginError))
     def login(self, session: requests.Session | None = None):
@@ -187,19 +200,15 @@ class Onleihe:
         return response_post.text
 
     @handle_exceptions(exception_types=(requests.RequestException, RentError))
-    def rent_media(self, media: Media, lend_period: int = 2, login: bool = True) -> RentResult | None:
+    def rent_media(self, media: Media, lend_period: int = 2) -> RentResult | None:
         return self._rent_media_by_id(
             media_id=media.id,
             lend_period=lend_period,
             session=self.session,
-            login=login,
         )
 
     @handle_exceptions(exception_types=(requests.RequestException, ReserveError))
-    def reserve_media(self, media: Media, email: str | None = None, login: bool = True):
-        if login:
-            self.login()
-
+    def reserve_media(self, media: Media, email: str | None = None):
         reserve_url = f"https://www.onleihe.de/{self.library}/frontend/mediaReserve,0-0-0-1003-0-0-0-0-0-0-0.html"
 
         data = {
@@ -209,8 +218,12 @@ class Onleihe:
             data['pRecipient'] = email
             data['pConfirmedRecipient'] = email
 
-        response = self.session.post(reserve_url, data=data, timeout=self.timeout)
-        response.raise_for_status()
+        response = self._request_with_login(
+            "post",
+            reserve_url,
+            data=data,
+            session=self.session,
+        )
 
         soup = BeautifulSoup(response.text, 'html.parser')
         error_paragraph = soup.find('p', class_='text-center mb-0')
@@ -220,73 +233,56 @@ class Onleihe:
         return response.text
 
     @handle_exceptions(exception_types=(requests.RequestException, RentError))
-    def lend_reservation(self, href: str, login: bool = True) -> RentResult | None:
-        session = self._new_session()
-        try:
-            if login:
-                self.login(session=session)
+    def lend_reservation(self, href: str) -> RentResult | None:
+        lend_url = self._normalize_url(href)
+        response = self._request_with_login(
+            "get",
+            lend_url,
+            session=self.session,
+        )
 
-            lend_url = self._normalize_url(href)
-            response = session.get(lend_url, timeout=self.timeout)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            error_paragraph = soup.find('p', class_='text-center mb-0')
-            if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
-                raise RentError(
-                    "An unexpected error occurred while trying to lend the reservation. Please try again later."
-                )
-
-            acsm_url = extract_acsm_url(response.text)
-            if acsm_url:
-                return RentResult(html=response.text, acsm_url=acsm_url)
-
-            media_id = Media.parse_id_from_href(href)
-            if media_id is None:
-                return RentResult(html=response.text, acsm_url=None)
-
-            return self._rent_media_by_id(
-                media_id=media_id,
-                lend_period=2,
-                session=session,
-                login=False,
+        soup = BeautifulSoup(response.text, 'html.parser')
+        error_paragraph = soup.find('p', class_='text-center mb-0')
+        if error_paragraph and "unerwarteter Fehler" in error_paragraph.get_text():
+            raise RentError(
+                "An unexpected error occurred while trying to lend the reservation. Please try again later."
             )
-        finally:
-            self._close_session(session)
+
+        acsm_url = extract_acsm_url(response.text)
+        if acsm_url:
+            return RentResult(html=response.text, acsm_url=acsm_url)
+
+        media_id = Media.parse_id_from_href(href)
+        if media_id is None:
+            return RentResult(html=response.text, acsm_url=None)
+
+        return self._rent_media_by_id(
+            media_id=media_id,
+            lend_period=2,
+            session=self.session,
+        )
 
     @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
     def fetch_acsm(self, url: str) -> bytes | None:
         normalized = self._normalize_url(url)
-        response = self.session.get(normalized, timeout=self.timeout)
-        response.raise_for_status()
+        response = self._request_with_login("get", normalized, session=self.session)
         return response.content
 
     @handle_exceptions(exception_types=(requests.RequestException,), default_value=None)
-    def fetch_my_bib_lendings(self, login: bool = True) -> str | None:
-        session = self._new_session()
-        try:
-            if login:
-                self.login(session=session)
-            url = (
-                f"https://www.onleihe.de/{self.library}/frontend/"
-                "myBib,0-0-0-100-0-0-0-0-0-0-0.html"
-            )
-            response = session.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            return response.text
-        finally:
-            self._close_session(session)
+    def fetch_my_bib_lendings(self) -> str | None:
+        url = (
+            f"https://www.onleihe.de/{self.library}/frontend/"
+            "myBib,0-0-0-100-0-0-0-0-0-0-0.html"
+        )
+        response = self._request_with_login("get", url, session=self.session)
+        return response.text
 
     def _rent_media_by_id(
         self,
         media_id: int,
         lend_period: int,
         session: requests.Session,
-        login: bool,
     ) -> RentResult:
-        if login:
-            self.login(session=session)
-
         rent_url = (
             f"https://www.onleihe.de/{self.library}/frontend/mediaLend,0-0-{media_id}-303-0-0-0-0-0-0-0.html"
         )
@@ -295,8 +291,12 @@ class Onleihe:
             'pLendPeriod': str(lend_period),
         }
 
-        response = session.post(rent_url, data=data, timeout=self.timeout)
-        response.raise_for_status()
+        response = self._request_with_login(
+            "post",
+            rent_url,
+            data=data,
+            session=session,
+        )
 
         soup = BeautifulSoup(response.text, 'html.parser')
         error_paragraph = soup.find('p', class_='text-center mb-0')
