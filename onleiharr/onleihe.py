@@ -36,7 +36,10 @@ def handle_exceptions(
                     if attempt < max_retries:
                         # Basic exponential backoff with jitter to avoid hammering Onleihe on flaky networks.
                         delay_secs = min(30.0, (2.0**attempt)) + random.random()
-                        logger.warning(
+                        log_fn = logger.warning
+                        if attempt == 0 and isinstance(exc, requests.ConnectionError):
+                            log_fn = logger.debug
+                        log_fn(
                             "Attempt %d/%d failed: %s - %s. Retrying in %.1fs...",
                             attempt + 1,
                             attempts,
