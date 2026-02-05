@@ -552,7 +552,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
             lendings_cache_primed = True
             lendings_next_check_ts = time.monotonic() + lendings_interval_secs
             logger.info(
-                "Primed MyBib lendings cache; downloaded %d items; next scan in %d seconds",
+                "Primed MyBib lendings cache; seeded %d items; next scan in %d seconds",
                 primed_count,
                 int(lendings_interval_secs),
             )
@@ -691,7 +691,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                                 lendings_cache_primed = True
                                 lendings_next_check_ts = now + lendings_interval_secs
                                 logger.info(
-                                    "Primed MyBib lendings cache; downloaded %d items; next scan in %d seconds",
+                                    "Primed MyBib lendings cache; seeded %d items; next scan in %d seconds",
                                     primed_count,
                                     int(lendings_interval_secs),
                                 )
