@@ -98,7 +98,7 @@ def _default_template() -> str:
 # Fill in your credentials and adjust URLs before running.
 
 [general]
-poll_interval_secs = 60.0
+poll_interval_secs = 300.0
 urls = [
   "https://www.onleihe.de/meinlibrary/frontend/mediaList,0-0-0-0-0-0-0-0-0-0-0.html",
 ]
@@ -159,7 +159,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         raise ConfigError("No URLs configured. Set [general].urls or ONLEIHARR_URLS.")
 
     poll_interval = _env_float(environ.get("ONLEIHARR_POLL_INTERVAL")) or general_section.get(
-        "poll_interval_secs", 60.0
+        "poll_interval_secs", 300.0
     )
 
     keywords = _env_list(environ.get("ONLEIHARR_KEYWORDS")) or general_section.get("keywords") or []

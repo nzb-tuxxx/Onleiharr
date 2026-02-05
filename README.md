@@ -49,7 +49,7 @@ Onleiharr is also available as an AUR package:
 ### Example onleiharr.toml
 ```toml
 [general]
-poll_interval_secs = 60.0
+poll_interval_secs = 300.0
 urls = [
   "https://www.onleihe.de/nbib24/frontend/versionInfoList,0-0-0-109-0-0-0-2008-400005-812926447-0.html", # ct magazine
   "https://www.onleihe.de/nbib24/frontend/simpleMediaList,0-0-0-109-0-0-0-0-0-1957099581-0.html", # finanzen magazine
