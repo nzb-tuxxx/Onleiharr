@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+import pytest
+
 from onleiharr._vendor.onleihe.client import OnleiheClient
+from onleiharr._vendor.onleihe.exceptions import OnleiheAPIError
+from onleiharr._vendor.onleihe.models import JobStatus
 from onleiharr._vendor.onleihe.models import SessionState
+from onleiharr._vendor.onleihe.parsers import parse_job_status
 from onleiharr._vendor.onleihe.parsers import parse_product_details
 from onleiharr._vendor.onleihe.parsers import parse_session
 
@@ -52,6 +58,22 @@ def test_parse_session_accepts_refresh_token_response_shape():
     assert session.username == "user"
 
 
+def test_parse_job_status_keeps_api_error():
+    job = parse_job_status(
+        {
+            "id": "job-1",
+            "state": "FAILED",
+            "apiError": {
+                "statusCode": 409,
+                "messageId": "no-available-licences",
+            },
+        }
+    )
+
+    assert job.state == "FAILED"
+    assert job.api_error == {"statusCode": 409, "messageId": "no-available-licences"}
+
+
 def test_refresh_preserves_existing_session_context():
     client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
     client.session = SessionState(
@@ -78,6 +100,53 @@ def test_refresh_preserves_existing_session_context():
     assert session.refresh_token == "old-refresh"
     assert session.user_id == "user-id"
     assert session.library_id == "library-id"
+
+
+def test_lend_raises_api_error_when_lend_job_fails():
+    client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
+    client.session = SessionState(
+        access_token="access",
+        refresh_token="refresh",
+        user_id="user-id",
+        profile_id="master",
+        library_id="library-id",
+        onleihe_id="onleihe-id",
+    )
+
+    def fake_post(path, *, params=None, json=None, auth=True):
+        return {"id": "job-1", "state": "IN_PROGRESS"}
+
+    def fake_wait_for_job(job_id, *, timeout=30.0, poll_interval=1.0):
+        return JobStatus(
+            id=job_id,
+            completed=False,
+            state="FAILED",
+            api_error={"statusCode": 409, "messageId": "no-available-licences"},
+        )
+
+    client._post = fake_post  # type: ignore[method-assign]
+    client.wait_for_job = fake_wait_for_job  # type: ignore[method-assign]
+
+    with pytest.raises(OnleiheAPIError) as exc_info:
+        client.lend("product-id")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.payload == {"statusCode": 409, "messageId": "no-available-licences"}
+
+
+def test_transport_timeout_is_normalized_to_api_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        client=http_client,
+    )
+
+    with pytest.raises(OnleiheAPIError, match="timed out"):
+        client.maintenance_active()
 
 
 def test_category_element_resolution_is_cached_per_client():

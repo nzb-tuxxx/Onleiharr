@@ -578,6 +578,13 @@ class OnleiheClient:
                     timeout=job_timeout,
                     poll_interval=job_poll_interval,
                 )
+                if job.api_error:
+                    status_code = _int_or_none(job.api_error.get("statusCode"))
+                    raise OnleiheAPIError(
+                        str(job.api_error.get("message") or "Onleihe lend job failed"),
+                        status_code=status_code,
+                        payload=job.api_error,
+                    )
                 response["job"] = job.raw
                 response["licence_url"] = job.licence_url
                 response["acsm_url"] = job.acsm_url
@@ -811,12 +818,12 @@ class OnleiheClient:
         for attempt in range(3):
             try:
                 return self._client.request(method, url, params=params, json=json, headers=headers)
-            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError) as exc:
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 if method.upper() not in {"GET", "HEAD"} or attempt == 2:
-                    raise
+                    raise OnleiheAPIError(f"Onleihe API request failed: {method} {url}: {exc}") from exc
                 time.sleep(0.2 * (attempt + 1))
-        raise last_error or RuntimeError("request retry failed")
+        raise OnleiheAPIError(f"Onleihe API request failed: {method} {url}: {last_error}") from last_error
 
 
 def _safe_json(response: httpx.Response):
@@ -834,7 +841,14 @@ def _job_id_from_response(payload: dict[str, Any]) -> str | None:
     if payload.get("state") or response_type.endswith("_JOB") or "JOB" in response_type:
         value = payload.get("id")
         return str(value) if value else None
-    return None
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:

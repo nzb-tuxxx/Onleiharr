@@ -77,6 +77,7 @@ Testing Guidance
 - Prefer mocked tests for API behavior; avoid live calls in default pytest.
 - Live private tests must be opt-in and use environment credentials.
 - Invasive live tests must require a separate explicit opt-in flag.
+- If Onleihe API behavior is unclear, verify it with real live credentials/data instead of guessing payloads, status codes, or error messages.
 - Achim defaults are acceptable as non-secret public examples.
 
 Git Hygiene for Agents

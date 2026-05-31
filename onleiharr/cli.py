@@ -47,6 +47,12 @@ class WatchedMedia:
     keyword_matched: bool
 
 
+@dataclass(frozen=True)
+class WatchPollResult:
+    media: list[WatchedMedia]
+    errors: int = 0
+
+
 def load_version() -> str:
     try:
         from importlib.metadata import version as metadata_version
@@ -342,8 +348,9 @@ def fetch_all_watched_media(
     config: AppConfig,
     *,
     log_summary: bool = False,
-) -> list[WatchedMedia]:
+) -> WatchPollResult:
     media: list[WatchedMedia] = []
+    errors = 0
     for product_id in config.general.watch_product_ids:
         try:
             product_media = fetch_product_watch_media(client, product_id)
@@ -353,6 +360,7 @@ def fetch_all_watched_media(
                 logger.debug("Fetched %d media items for product watch %s", len(product_media), product_id)
             media.extend(product_media)
         except Exception as exc:
+            errors += 1
             logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
     for watch in config.general.watch_categories:
         try:
@@ -368,8 +376,9 @@ def fetch_all_watched_media(
                 logger.debug("Fetched %d matched media items for category watch %s", len(category_media), watch)
             media.extend(category_media)
         except Exception as exc:
+            errors += 1
             logger.exception("Failed to fetch category watch %s: %s", watch.description or watch.category_ids, exc)
-    return media
+    return WatchPollResult(media=media, errors=errors)
 
 
 def format_message(media: WatchedMedia, availability_message: str) -> str:
@@ -477,7 +486,18 @@ def maybe_lend_or_reserve(
 
     if media.available:
         logger.info("%s is available, attempting auto lend", media.title)
-        lend_result = client.lend(media.product_id)
+        try:
+            lend_result = client.lend(media.product_id)
+        except OnleiheAPIError as exc:
+            if not lend_failure_allows_reserve(exc):
+                raise
+            logger.warning(
+                "Auto lend failed for '%s' because it no longer appears lendable; attempting reservation.",
+                media.title,
+            )
+            client.reserve(media.product_id)
+            rented_media_ids.add(media.product_id)
+            return "auto reserved after lend failed", None
         rented_media_ids.add(media.product_id)
         acsm_url = lend_result.get("acsm_url") or media.acsm_url
         download_path: Path | None = None
@@ -500,6 +520,14 @@ def maybe_lend_or_reserve(
     client.reserve(media.product_id)
     rented_media_ids.add(media.product_id)
     return f"auto reserved - {availability_text(media)}", None
+
+
+def lend_failure_allows_reserve(exc: OnleiheAPIError) -> bool:
+    if isinstance(exc, OnleiheAuthError):
+        return False
+    if exc.status_code != 409 or not isinstance(exc.payload, dict):
+        return False
+    return exc.payload.get("messageId") == "no-available-licences"
 
 
 def availability_text(media: WatchedMedia) -> str:
@@ -525,8 +553,6 @@ def process_my_media_downloads(
     for item in client.get_my_media_items(include_player_licences=False):
         product_id = item.product_id or item.id
         if not product_id or product_id in downloaded_media_ids:
-            continue
-        if config.gourou.lendings_download_keywords_only and not matches_any_watch(item, config):
             continue
         if seed_only and (item.acsm_url or item.lend_id):
             downloaded_media_ids.add(product_id)
@@ -560,14 +586,6 @@ def process_my_media_downloads(
                 notify(apobj, message, attachments=[download_path] if download_path else None)
     return handled
 
-
-def matches_any_watch(item: MediaItem, config: AppConfig) -> bool:
-    product_id = item.product_id or item.id
-    if product_id and product_id in config.general.watch_product_ids:
-        return True
-    return any(matches_filter(item, watch.keywords) for watch in config.general.watch_categories)
-
-
 def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     apobj = build_apprise(config)
     client = create_onleihe_client(config)
@@ -585,23 +603,38 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     try:
         login(client, config)
         if lendings_enabled:
-            seeded = process_my_media_downloads(
-                client,
-                config,
-                apobj,
-                gourou_client,
-                downloaded_media_ids,
-                seed_only=True,
-            )
+            try:
+                seeded = process_my_media_downloads(
+                    client,
+                    config,
+                    apobj,
+                    gourou_client,
+                    downloaded_media_ids,
+                    seed_only=True,
+                )
+            except Exception as exc:
+                seeded = 0
+                logger.exception("Failed to prime my-media cache; will retry later: %s", exc)
             lendings_next_check_ts = time.monotonic() + lendings_interval_secs
             logger.info("Primed my-media cache with %d items.", seeded)
 
         while True:
-            current_media_list = fetch_all_watched_media(client, config, log_summary=first_run)
+            poll_result = fetch_all_watched_media(client, config, log_summary=first_run)
+            current_media_list = poll_result.media
             current_media_by_id = {media.product_id: media for media in current_media_list}
             current_media_ids = set(current_media_by_id)
 
             if first_run:
+                if poll_result.errors:
+                    logger.warning(
+                        "Initial media cache priming had %d failed watch target(s); keeping startup incomplete.",
+                        poll_result.errors,
+                    )
+                    if args.once:
+                        logger.info("--once set; exiting after incomplete first iteration")
+                        break
+                    time.sleep(config.general.poll_interval_secs)
+                    continue
                 known_media_ids = current_media_ids
                 first_run = False
                 logger.info(
@@ -613,6 +646,11 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                     media = current_media_list[-1]
                     notify(apobj, format_message(media, "test notification"))
             else:
+                if poll_result.errors:
+                    logger.warning(
+                        "Watch poll had %d failed target(s); keeping existing cache for failed targets.",
+                        poll_result.errors,
+                    )
                 new_media_ids = current_media_ids - known_media_ids
                 if new_media_ids:
                     logger.info("Found %d new media items", len(new_media_ids))
@@ -643,15 +681,18 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 known_media_ids.update(new_media_ids)
 
             if lendings_enabled and lendings_next_check_ts is not None and time.monotonic() >= lendings_next_check_ts:
-                count = process_my_media_downloads(
-                    client,
-                    config,
-                    apobj,
-                    gourou_client,
-                    downloaded_media_ids,
-                    seed_only=False,
-                )
-                logger.debug("My-media scan handled %d items.", count)
+                try:
+                    count = process_my_media_downloads(
+                        client,
+                        config,
+                        apobj,
+                        gourou_client,
+                        downloaded_media_ids,
+                        seed_only=False,
+                    )
+                    logger.debug("My-media scan handled %d items.", count)
+                except Exception as exc:
+                    logger.exception("My-media scan failed; will retry later: %s", exc)
                 lendings_next_check_ts = time.monotonic() + lendings_interval_secs
 
             if args.once:
@@ -710,6 +751,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         run_loop(config, args)
+    except OnleiheAuthError as exc:
+        logger.error("Onleihe authentication failed: %s", exc)
+        return 1
+    except OnleiheAPIError as exc:
+        logger.error("Onleihe API startup error: %s", exc)
+        return 1
     except ConfigError as exc:
         logger.error("Configuration error: %s", exc)
         return 1

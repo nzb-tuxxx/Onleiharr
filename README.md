@@ -79,7 +79,6 @@ password = "your-password"
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
 # lendings_poll_interval_secs = 21600.0
-# lendings_download_keywords_only = true
 # lendings_notify = true
 ```
 
@@ -87,6 +86,7 @@ Behavior:
 - `watch_product_ids` are direct product or series watches and do not use keyword filtering.
 - `watch_categories` combine `category_ids` and IDs extracted from `category_urls`, then search newest media first with a fixed page size of 50.
 - Category watches only act on media whose title, subtitle, or authors match their `keywords`.
+- If `lendings_poll_interval_secs` is greater than `0`, the my-media poller downloads newly discovered lendings that were not primed at startup. Set it to `0` to disable this feature.
 - Credentials can use names by default; IDs are optional exact overrides.
 
 Environment overrides:
@@ -101,7 +101,6 @@ Environment overrides:
 - `ONLEIHARR_GOUROU_DOWNLOAD_PERMISSIONS`, `ONLEIHARR_GOUROU_TIMEOUT`
 - `ONLEIHARR_GOUROU_REMOVE_DRM`, `ONLEIHARR_GOUROU_ACK_DRM`
 - `ONLEIHARR_GOUROU_LENDINGS_POLL_INTERVAL`
-- `ONLEIHARR_GOUROU_LENDINGS_DOWNLOAD_KEYWORDS_ONLY`
 - `ONLEIHARR_GOUROU_LENDINGS_NOTIFY`
 
 ## libgourou

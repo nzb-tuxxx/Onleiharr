@@ -222,6 +222,7 @@ def parse_job_status(payload: dict[str, Any]) -> JobStatus:
         care_drm_uri=extract_drm_uri(payload, "CARE"),
         pdf_url=extract_mime_type_uri(payload, "PDF"),
         epub_url=extract_mime_type_uri(payload, "EPUB"),
+        api_error=payload.get("apiError") if isinstance(payload.get("apiError"), dict) else None,
         raw=payload,
     )
 

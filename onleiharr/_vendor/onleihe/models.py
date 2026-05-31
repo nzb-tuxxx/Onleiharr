@@ -138,4 +138,5 @@ class JobStatus:
     care_drm_uri: str | None = None
     pdf_url: str | None = None
     epub_url: str | None = None
+    api_error: JSON | None = None
     raw: JSON = field(default_factory=dict)

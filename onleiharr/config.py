@@ -61,7 +61,6 @@ class GourouConfig:
     remove_drm: bool
     remove_drm_ack: str | None
     lendings_poll_interval_secs: float
-    lendings_download_keywords_only: bool
     lendings_notify: bool
 
 
@@ -107,7 +106,6 @@ SECTION_KEYS = {
         "remove_drm",
         "remove_drm_ack",
         "lendings_poll_interval_secs",
-        "lendings_download_keywords_only",
         "lendings_notify",
     },
 }
@@ -185,7 +183,6 @@ email = ""
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
 # lendings_poll_interval_secs = 21600.0
-# lendings_download_keywords_only = true
 # lendings_notify = true
 
 [credentials]
@@ -446,7 +443,6 @@ def _load_gourou(section: dict[str, Any], environ: os._Environ[str], *, base: Pa
     timeout = _env_float(environ.get("ONLEIHARR_GOUROU_TIMEOUT"))
     remove_drm_env = environ.get("ONLEIHARR_GOUROU_REMOVE_DRM")
     lendings_poll_interval_env = _env_float(environ.get("ONLEIHARR_GOUROU_LENDINGS_POLL_INTERVAL"))
-    lendings_keywords_only_env = environ.get("ONLEIHARR_GOUROU_LENDINGS_DOWNLOAD_KEYWORDS_ONLY")
     lendings_notify_env = environ.get("ONLEIHARR_GOUROU_LENDINGS_NOTIFY")
 
     return GourouConfig(
@@ -476,11 +472,6 @@ def _load_gourou(section: dict[str, Any], environ: os._Environ[str], *, base: Pa
             lendings_poll_interval_env
             if lendings_poll_interval_env is not None
             else section.get("lendings_poll_interval_secs", 21600.0)
-        ),
-        lendings_download_keywords_only=(
-            _env_bool(lendings_keywords_only_env)
-            if lendings_keywords_only_env is not None
-            else bool(section.get("lendings_download_keywords_only", True))
         ),
         lendings_notify=(
             _env_bool(lendings_notify_env)

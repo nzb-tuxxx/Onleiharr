@@ -1,7 +1,18 @@
 from __future__ import annotations
 
-from onleiharr._vendor.onleihe import MediaItem, ProductDetails, SearchResultPage
-from onleiharr.cli import fetch_category_watch_media, fetch_product_watch_media, matches_filter
+from types import SimpleNamespace
+
+from onleiharr._vendor.onleihe import MediaItem, OnleiheAPIError, OnleiheAuthError, ProductDetails, SearchResultPage
+from onleiharr.cli import (
+    WatchedMedia,
+    fetch_all_watched_media,
+    fetch_category_watch_media,
+    fetch_product_watch_media,
+    lend_failure_allows_reserve,
+    matches_filter,
+    maybe_lend_or_reserve,
+    process_my_media_downloads,
+)
 from onleiharr.config import WatchCategory
 
 
@@ -119,6 +130,26 @@ def test_category_watch_filters_by_keywords():
     ]
 
 
+def test_fetch_all_watched_media_reports_target_errors():
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            if product_id == "broken":
+                raise OnleiheAPIError("not found", status_code=404)
+            return super().get_product(product_id, include_user_context=include_user_context)
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            watch_product_ids=["series-1", "broken"],
+            watch_categories=[],
+        )
+    )
+
+    result = fetch_all_watched_media(Client(), config)  # type: ignore[arg-type]
+
+    assert [item.product_id for item in result.media] == ["issue-1"]
+    assert result.errors == 1
+
+
 def test_matches_filter_uses_title_subtitle_and_authors():
     item = MediaItem(
         id="book-1",
@@ -132,3 +163,128 @@ def test_matches_filter_uses_title_subtitle_and_authors():
     assert matches_filter(item, ["ada"])
     assert matches_filter(item, ["praxis"])
     assert not matches_filter(item, ["python"])
+
+
+def test_available_media_reserves_when_lend_fails_because_unavailable():
+    class Client:
+        host = "example.onleihe.de"
+        lent = False
+        reserved = False
+
+        def lend(self, product_id: str):
+            self.lent = True
+            raise OnleiheAPIError(
+                "lend failed",
+                status_code=409,
+                payload={"messageId": "no-available-licences"},
+            )
+
+        def reserve(self, product_id: str):
+            self.reserved = True
+            return {}
+
+    client = Client()
+    handled_ids: set[str] = set()
+    message, download_path = maybe_lend_or_reserve(
+        watched_media(product_id="book-1", available=True),
+        client,  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        gourou_client=None,
+        rented_media_ids=handled_ids,
+        downloaded_media_ids=set(),
+    )
+
+    assert client.lent is True
+    assert client.reserved is True
+    assert handled_ids == {"book-1"}
+    assert message == "auto reserved after lend failed"
+    assert download_path is None
+
+
+def test_available_media_does_not_reserve_after_auth_lend_error():
+    class Client:
+        reserved = False
+
+        def lend(self, product_id: str):
+            raise OnleiheAuthError("auth failed", status_code=401)
+
+        def reserve(self, product_id: str):
+            self.reserved = True
+
+    client = Client()
+
+    try:
+        maybe_lend_or_reserve(
+            watched_media(product_id="book-1", available=True),
+            client,  # type: ignore[arg-type]
+            config=None,  # type: ignore[arg-type]
+            gourou_client=None,
+            rented_media_ids=set(),
+            downloaded_media_ids=set(),
+        )
+    except OnleiheAuthError:
+        pass
+    else:
+        raise AssertionError("auth lend errors must be propagated")
+
+    assert client.reserved is False
+
+
+def test_lend_failure_allows_reserve_only_for_availability_errors():
+    assert lend_failure_allows_reserve(
+        OnleiheAPIError(
+            "lend failed",
+            status_code=409,
+            payload={"messageId": "no-available-licences"},
+        )
+    )
+    assert not lend_failure_allows_reserve(
+        OnleiheAPIError("lend failed", status_code=409, payload={"message": "no licence available maybe"})
+    )
+
+
+def test_my_media_seed_primes_all_lendings_without_keyword_filter():
+    class Client:
+        def get_my_media_items(self, *, include_player_licences: bool = True):
+            return [
+                MediaItem(
+                    id="loan-1",
+                    product_id="loan-1",
+                    title="Unrelated Loan",
+                    subtitle=None,
+                    media_type="E_BOOK",
+                    authors=[],
+                    lend_id="lend-1",
+                )
+            ]
+
+    downloaded_ids: set[str] = set()
+    count = process_my_media_downloads(
+        Client(),  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        apobj=None,  # type: ignore[arg-type]
+        gourou_client=object(),  # type: ignore[arg-type]
+        downloaded_media_ids=downloaded_ids,
+        seed_only=True,
+    )
+
+    assert count == 1
+    assert downloaded_ids == {"loan-1"}
+
+
+def watched_media(*, product_id: str, available: bool) -> WatchedMedia:
+    return WatchedMedia(
+        product_id=product_id,
+        title="Test Book",
+        url=f"https://example.onleihe.de/mymedia/mediadetail?productId={product_id}",
+        media_type="E_AUDIO",
+        authors=(),
+        subtitle=None,
+        publication_date=None,
+        available=available,
+        availability_text=None,
+        acsm_url=None,
+        source="test",
+        keyword_required=False,
+        keyword_matched=True,
+    )
