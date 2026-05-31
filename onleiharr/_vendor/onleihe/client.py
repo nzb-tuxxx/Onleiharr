@@ -320,8 +320,8 @@ class OnleiheClient:
         if require_login:
             params = self._context_params(include_user=True)
         else:
-            params = {}
             self._ensure_anonymous_session()
+            params = self._context_params(include_user=False)
         results = parse_search_results(
             self._post(f"/ui/v1/onleihe/{self._onleihe_id()}/search", params=params, json=body)
         )
@@ -667,8 +667,9 @@ class OnleiheClient:
 
     def _context_params(self, *, include_user: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {}
-        if self.library_id:
-            params["libraryId"] = self.library_id
+        library_id = self._library_id(optional=True)
+        if library_id:
+            params["libraryId"] = library_id
         if include_user:
             self._ensure_login()
             params["userId"] = self._user_id()

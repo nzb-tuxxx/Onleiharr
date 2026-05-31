@@ -134,6 +134,30 @@ def test_lend_raises_api_error_when_lend_job_fails():
     assert exc_info.value.payload == {"statusCode": 409, "messageId": "no-available-licences"}
 
 
+def test_anonymous_search_preserves_library_context_without_user_id():
+    client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
+    client.session = SessionState(
+        access_token="access",
+        refresh_token="refresh",
+        user_id="user-id",
+        profile_id="master",
+        library_id="library-id",
+        onleihe_id="onleihe-id",
+    )
+    calls: list[dict[str, Any] | None] = []
+
+    def fake_post(path, *, params=None, json=None, auth=True):
+        assert path == "/ui/v1/onleihe/onleihe-id/search"
+        calls.append(params)
+        return {"content": []}
+
+    client._post = fake_post  # type: ignore[method-assign]
+
+    client.search_media(raw_body={"query": [], "size": 50}, require_login=False)
+
+    assert calls == [{"libraryId": "library-id"}]
+
+
 def test_transport_timeout_is_normalized_to_api_error():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("timed out")
