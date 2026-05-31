@@ -6,31 +6,45 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from random import choice
-from typing import Iterable, Set
+from typing import Iterable
 
 import apprise
-import requests
-from requests.exceptions import RequestException
 
+from onleiharr._vendor.onleihe import MediaItem, OnleiheAPIError, OnleiheAuthError, OnleiheClient
 from onleiharr.config import (
     AppConfig,
     ConfigError,
+    WatchCategory,
     default_config_path,
     ensure_default_config,
     load_config,
 )
 from onleiharr.gourou import GourouClient, GourouError
-from onleiharr.models import Book, Magazine, Media, MyBibLending
-from onleiharr.parser import fetch_media, parse_my_bib_lendings
-from onleiharr.onleihe import Onleihe, RentResult
 
 logger = logging.getLogger(__name__)
 
 DRM_ACK_TOKEN = "I_UNDERSTAND"
+
+
+@dataclass(frozen=True)
+class WatchedMedia:
+    product_id: str
+    title: str
+    url: str
+    media_type: str | None
+    authors: tuple[str, ...]
+    subtitle: str | None
+    publication_date: str | None
+    available: bool
+    availability_text: str | None
+    acsm_url: str | None
+    source: str
+    keyword_required: bool
+    keyword_matched: bool
 
 
 def load_version() -> str:
@@ -82,18 +96,8 @@ WantedBy=default.target
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Onleiharr watcher and auto-renter")
-    parser.add_argument(
-        "-c",
-        "--config",
-        dest="config_path",
-        type=Path,
-        help="Path to onleiharr.toml",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=load_version(),
-    )
+    parser.add_argument("-c", "--config", dest="config_path", type=Path, help="Path to onleiharr.toml")
+    parser.add_argument("--version", action="version", version=load_version())
     parser.add_argument(
         "--install-as-user-systemd",
         action="store_true",
@@ -107,17 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="INFO",
         help="Logging verbosity",
     )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Run a single poll iteration and exit",
-    )
-    parser.add_argument(
-        "--interval",
-        type=float,
-        dest="interval",
-        help="Override poll interval in seconds",
-    )
+    parser.add_argument("--once", action="store_true", help="Run a single poll iteration and exit")
+    parser.add_argument("--interval", type=float, dest="interval", help="Override poll interval in seconds")
     parser.add_argument(
         "--test-notification",
         action="store_true",
@@ -133,10 +128,7 @@ def setup_logging(level: str) -> None:
         if os.getenv("JOURNAL_STREAM") or os.getenv("INVOCATION_ID")
         else "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
-    logging.basicConfig(
-        level=getattr(logging, level),
-        format=format_string,
-    )
+    logging.basicConfig(level=getattr(logging, level), format=format_string)
 
 
 def resolve_config_path(args: argparse.Namespace) -> Path:
@@ -156,21 +148,24 @@ def ensure_config_or_exit(path: Path) -> None:
     sys.exit(1)
 
 
-def load_keywords_from_config(keywords: Iterable[str]) -> Set[str]:
-    return {kw.strip() for kw in keywords if kw.strip()}
-
-
-def matches_filter(title: str, filters: Iterable[str]) -> bool:
-    title_lower = title.lower()
-    return any(entry.lower() in title_lower for entry in filters)
+def matches_filter(media: WatchedMedia | MediaItem, filters: Iterable[str]) -> bool:
+    haystack = " ".join(
+        part
+        for part in [
+            getattr(media, "title", None),
+            getattr(media, "subtitle", None),
+            " ".join(getattr(media, "authors", []) or []),
+        ]
+        if part
+    ).lower()
+    return any(entry.lower() in haystack for entry in filters)
 
 
 def build_apprise(config: AppConfig) -> apprise.Apprise:
     apobj = apprise.Apprise()
 
-    if config.notification.urls:
-        for url in config.notification.urls:
-            apobj.add(url)
+    for url in config.notification.urls:
+        apobj.add(url)
 
     if config.notification.apprise_config_path:
         apprise_config = apprise.AppriseConfig()
@@ -203,18 +198,192 @@ def notify(
             if apprise_supports_attachments(apobj):
                 apobj.notify(title="Onleihe: New media", body=message, attach=attachment_paths)
                 return
-            logger.warning(
-                "No Apprise targets support attachments; sending notification without attachments."
-            )
+            logger.warning("No Apprise targets support attachments; sending notification without attachments.")
     apobj.notify(title="Onleihe: New media", body=message)
+
+
+def create_onleihe_client(config: AppConfig) -> OnleiheClient:
+    return OnleiheClient(
+        host=config.credentials.host,
+        onleihe_id=config.credentials.onleihe_id,
+        onleihe_name=config.credentials.onleihe_name,
+        library_id=config.credentials.library_id,
+        library_name=config.credentials.library_name,
+    )
+
+
+def login(client: OnleiheClient, config: AppConfig) -> None:
+    client.login(
+        config.credentials.username,
+        config.credentials.password,
+        onleihe_id=config.credentials.onleihe_id,
+        onleihe_name=config.credentials.onleihe_name,
+        library_id=config.credentials.library_id,
+        library_name=config.credentials.library_name,
+    )
+
+
+def media_from_item(
+    item: MediaItem,
+    *,
+    host: str,
+    source: str,
+    keyword_required: bool,
+    keyword_matched: bool,
+) -> WatchedMedia | None:
+    product_id = item.product_id or item.id
+    if not product_id:
+        return None
+    title = item.title or product_id
+    availability = item.availability or {}
+    availability_count = availability.get("availability", 0)
+    if not isinstance(availability_count, int):
+        availability_count = 0
+    available = bool(availability.get("isAvailable") or availability_count > 0)
+    availability_text = availability.get("availabilityDate") or availability.get("expectedAvailableAt")
+    return WatchedMedia(
+        product_id=str(product_id),
+        title=title,
+        url=f"https://{host}/mymedia/mediadetail?productId={product_id}",
+        media_type=item.media_type,
+        authors=tuple(item.authors),
+        subtitle=item.subtitle,
+        publication_date=item.publication_date,
+        available=available,
+        availability_text=str(availability_text) if availability_text else None,
+        acsm_url=item.acsm_url,
+        source=source,
+        keyword_required=keyword_required,
+        keyword_matched=keyword_matched,
+    )
+
+
+def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[WatchedMedia]:
+    product = client.get_product(product_id, include_user_context=False)
+    items = product.included_media
+    if not items:
+        container_ids = product.raw.get("product", {}).get("containerIds", [])
+        if isinstance(container_ids, list) and container_ids:
+            items = []
+            for container_id in container_ids:
+                if not container_id:
+                    continue
+                container = client.get_product(str(container_id), include_user_context=False)
+                items.extend(container.included_media or [container])
+            logger.debug(
+                "Resolved product watch %s through %d container ids to %d media items",
+                product_id,
+                len(container_ids),
+                len(items),
+            )
+    if not items:
+        items = [product]
+    media: list[WatchedMedia] = []
+    for item in items:
+        converted = media_from_item(
+            item,
+            host=client.host,
+            source=f"product:{product_id}",
+            keyword_required=False,
+            keyword_matched=True,
+        )
+        if converted:
+            media.append(converted)
+    return media
+
+
+def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> list[WatchedMedia]:
+    body = client.build_category_search_body(
+        watch.category_ids,
+        sort=[{"field": watch.sort_field, "order": watch.sort_order}],
+    )
+    post_filters = list(body.get("postFilters", []))
+    if watch.media_types:
+        post_filters.append({"field": "mediaType", "values": watch.media_types})
+    post_filters.extend(watch.filters)
+    if post_filters:
+        body["postFilters"] = merge_filters(post_filters)
+    result = client.search_media(raw_body=body, require_login=False)
+    media: list[WatchedMedia] = []
+    source = f"category:{watch.description or ','.join(watch.category_ids[:2])}"
+    for item in result.items:
+        keyword_matched = matches_filter(item, watch.keywords)
+        if not keyword_matched:
+            continue
+        converted = media_from_item(
+            item,
+            host=client.host,
+            source=source,
+            keyword_required=True,
+            keyword_matched=True,
+        )
+        if converted:
+            media.append(converted)
+    return media
+
+
+def merge_filters(filters: list[dict[str, object]]) -> list[dict[str, object]]:
+    by_field: dict[str, list[str]] = {}
+    for item in filters:
+        field = item.get("field")
+        values = item.get("values")
+        if not isinstance(field, str) or not isinstance(values, list):
+            continue
+        target = by_field.setdefault(field, [])
+        for value in values:
+            value_str = str(value)
+            if value_str not in target:
+                target.append(value_str)
+    return [{"field": field, "values": values} for field, values in by_field.items()]
+
+
+def fetch_all_watched_media(
+    client: OnleiheClient,
+    config: AppConfig,
+    *,
+    log_summary: bool = False,
+) -> list[WatchedMedia]:
+    media: list[WatchedMedia] = []
+    for product_id in config.general.watch_product_ids:
+        try:
+            product_media = fetch_product_watch_media(client, product_id)
+            if log_summary:
+                logger.info("Primed product watch %s with %d media items.", product_id, len(product_media))
+            else:
+                logger.debug("Fetched %d media items for product watch %s", len(product_media), product_id)
+            media.extend(product_media)
+        except Exception as exc:
+            logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
+    for watch in config.general.watch_categories:
+        try:
+            category_media = fetch_category_watch_media(client, watch)
+            label = watch.description or ",".join(watch.category_ids[:2])
+            if log_summary:
+                logger.info(
+                    "Primed category watch %s with %d keyword-matched media items.",
+                    label,
+                    len(category_media),
+                )
+            else:
+                logger.debug("Fetched %d matched media items for category watch %s", len(category_media), watch)
+            media.extend(category_media)
+        except Exception as exc:
+            logger.exception("Failed to fetch category watch %s: %s", watch.description or watch.category_ids, exc)
+    return media
+
+
+def format_message(media: WatchedMedia, availability_message: str) -> str:
+    label = media.media_type or "MEDIA"
+    author = f" - {', '.join(media.authors)}" if media.authors else ""
+    return f"[{label}] <b><a href=\"{media.url}\">{media.title}{author}</a></b> {availability_message}"
 
 
 def download_acsm_with_gourou(
     *,
-    media_id: int,
+    product_id: str,
     title: str,
     acsm_url: str | None,
-    onleihe: Onleihe,
+    client: OnleiheClient,
     gourou_client: GourouClient | None,
 ) -> tuple[bool, Path | None]:
     if gourou_client is None:
@@ -223,525 +392,267 @@ def download_acsm_with_gourou(
     if not acsm_url:
         logger.warning("No ACSM URL found for '%s'; download skipped.", title)
         return False, None
-    success = False
-    downloaded_path: Path | None = None
+
     try:
         logger.info("Fetching ACSM for '%s'...", title)
-        logger.debug("Fetching ACSM URL for '%s': %s", title, acsm_url)
-        acsm_content = onleihe.fetch_acsm(acsm_url)
+        acsm_content = client.download_acsm(acsm_url)
         if not acsm_content:
             logger.error("Failed to download ACSM for '%s'.", title)
             return False, None
 
-        fd, tmp_path = tempfile.mkstemp(prefix=f"onleiharr_{media_id}_", suffix=".acsm")
+        fd, tmp_path = tempfile.mkstemp(prefix=f"onleiharr_{product_id}_", suffix=".acsm")
         os.close(fd)
         acsm_path = Path(tmp_path)
-
-        try:
-            acsm_path.write_bytes(acsm_content)
-        except OSError as exc:
-            logger.error("Failed to write ACSM file for '%s': %s", title, exc)
-            return False, None
+        acsm_path.write_bytes(acsm_content)
 
         cleanup = False
         try:
             result = gourou_client.download_acsm(acsm_path, notify=False)
             cleanup = True
-            if result.output_path and result.output_path.exists():
-                success = True
-                downloaded_path = result.output_path
-                logger.info("Downloaded media to %s.", result.output_path)
-                if gourou_client.config.remove_drm:
-                    if result.output_path.suffix.lower() in {".pdf", ".epub"}:
-                        try:
-                            gourou_client.remove_drm(result.output_path)
-                            logger.info("DRM removed for %s.", result.output_path)
-                        except GourouError as exc:
-                            logger.error("DRM removal failed for %s: %s", result.output_path, exc)
-                    else:
-                        logger.info(
-                            "DRM removal enabled but file is not PDF/EPUB; skipping %s.",
-                            result.output_path,
-                        )
-                if gourou_client.config.download_permissions is not None:
-                    permissions = gourou_client.config.download_permissions
-                    try:
-                        result.output_path.chmod(permissions)
-                        logger.info(
-                            "Set permissions %s for %s.",
-                            f"{permissions:04o}",
-                            result.output_path,
-                        )
-                    except OSError as exc:
-                        logger.warning(
-                            "Failed to set permissions %s for %s: %s",
-                            f"{permissions:04o}",
-                            result.output_path,
-                            exc,
-                        )
-            else:
-                # Don't treat this as a successful download - we would otherwise suppress retries
-                # and potentially send a misleading notification.
-                if result.output_path:
-                    logger.warning(
-                        "acsmdownloader returned an output path but file is missing: %s. Will retry later.",
-                        result.output_path,
-                    )
-                else:
-                    logger.warning(
-                        "acsmdownloader finished but output path could not be parsed. Will retry later."
-                    )
+            if not result.output_path or not result.output_path.exists():
+                logger.warning("acsmdownloader finished without a usable output path. Will retry later.")
+                return False, None
+            if gourou_client.config.remove_drm and result.output_path.suffix.lower() in {".pdf", ".epub"}:
+                try:
+                    gourou_client.remove_drm(result.output_path)
+                    logger.info("DRM removed for %s.", result.output_path)
+                except GourouError as exc:
+                    logger.error("DRM removal failed for %s: %s", result.output_path, exc)
+            if gourou_client.config.download_permissions is not None:
+                result.output_path.chmod(gourou_client.config.download_permissions)
+            logger.info("Downloaded media to %s.", result.output_path)
+            return True, result.output_path
         except GourouError as exc:
             logger.error("Gourou download failed for '%s': %s", title, exc)
+            return False, None
         finally:
             if cleanup:
                 try:
                     acsm_path.unlink()
-                except OSError as exc:
-                    logger.debug("Failed to remove ACSM file %s: %s", acsm_path, exc)
+                except OSError:
+                    logger.debug("Failed to remove ACSM file %s.", acsm_path, exc_info=True)
             else:
                 logger.info("Keeping ACSM file for debugging: %s", acsm_path)
     except Exception as exc:
         logger.exception("Unexpected error during download for '%s': %s", title, exc)
-    return success, downloaded_path
-
-
-def download_media_with_gourou(
-    media: Media,
-    rent_result: RentResult,
-    onleihe: Onleihe,
-    gourou_client: GourouClient | None,
-) -> tuple[bool, Path | None]:
-    return download_acsm_with_gourou(
-        media_id=media.id,
-        title=media.title,
-        acsm_url=rent_result.acsm_url,
-        onleihe=onleihe,
-        gourou_client=gourou_client,
-    )
-
-
-def _build_onleihe_frontend_url(library: str, href: str | None) -> str | None:
-    if not href:
-        return None
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    if href.startswith("/"):
-        return f"https://www.onleihe.de{href}"
-    return f"https://www.onleihe.de/{library}/frontend/{href}"
-
-
-def format_my_bib_download_message(library: str, lending: MyBibLending) -> str:
-    title = lending.title or f"media id {lending.media_id}"
-    url = _build_onleihe_frontend_url(library, lending.media_info_href)
-    if url:
-        link = f"<a href=\"{url}\">{title}</a>"
-    else:
-        link = title
-    return f"[MYBIB] <b>{link}</b> auto downloaded"
-
-
-def _looks_like_login_page(html: str) -> bool:
-    # Cheap but effective: if we got redirected to the login form, don't treat this as a successful scan/prime.
-    return 'id="loginForm"' in html or "id='loginForm'" in html
-
-
-def _process_my_bib_lendings(
-    lendings: list[MyBibLending],
-    onleihe: Onleihe,
-    downloaded_media_ids: Set[int],
-    keywords: Set[str],
-    config: AppConfig,
-    apobj: apprise.Apprise,
-    gourou_client: GourouClient,
-    download_existing_acsm: bool,
-) -> dict[str, int]:
-    seeded = 0
-    skipped_known = 0
-    skipped_keywords = 0
-    skipped_no_acsm = 0
-    attempted = 0
-    lend_attempted = 0
-    lend_failed = 0
-    downloaded_ok = 0
-    downloaded_failed = 0
-    notified = 0
-
-    for lending in lendings:
-        if lending.media_id in downloaded_media_ids:
-            skipped_known += 1
-            continue
-        if config.gourou.lendings_download_keywords_only and (
-            not lending.title or not matches_filter(lending.title, keywords)
-        ):
-            skipped_keywords += 1
-            logger.debug(
-                "MyBib lending '%s' does not match keywords; skipping.",
-                lending.title or lending.media_id,
-            )
-            continue
-
-        acsm_url = lending.acsm_url
-        if acsm_url and not download_existing_acsm:
-            downloaded_media_ids.add(lending.media_id)
-            seeded += 1
-            continue
-        if not acsm_url and lending.lend_href:
-            lend_attempted += 1
-            lend_result = onleihe.lend_reservation(lending.lend_href)
-            if lend_result and lend_result.acsm_url:
-                acsm_url = lend_result.acsm_url
-            else:
-                lend_failed += 1
-        if not acsm_url:
-            skipped_no_acsm += 1
-            logger.debug(
-                "No ACSM URL found for MyBib lending '%s' (id %s); download skipped.",
-                lending.title or "",
-                lending.media_id,
-            )
-            continue
-
-        attempted += 1
-        downloaded, lending_download_path = download_acsm_with_gourou(
-            media_id=lending.media_id,
-            title=lending.title or f"media id {lending.media_id}",
-            acsm_url=acsm_url,
-            onleihe=onleihe,
-            gourou_client=gourou_client,
-        )
-        if downloaded:
-            downloaded_media_ids.add(lending.media_id)
-            downloaded_ok += 1
-            if config.gourou.lendings_notify:
-                notify_message = format_my_bib_download_message(config.credentials.library, lending)
-                logger.info("Notify (MyBib): %s", notify_message)
-                notify(
-                    apobj,
-                    notify_message,
-                    attachments=[lending_download_path] if lending_download_path else None,
-                )
-                notified += 1
-        else:
-            downloaded_failed += 1
-
-    return {
-        "seeded": seeded,
-        "attempted": attempted,
-        "downloaded_ok": downloaded_ok,
-        "downloaded_failed": downloaded_failed,
-        "skipped_known": skipped_known,
-        "skipped_keywords": skipped_keywords,
-        "skipped_no_acsm": skipped_no_acsm,
-        "lend_attempted": lend_attempted,
-        "lend_failed": lend_failed,
-        "notified": notified,
-    }
-
-
-def prime_my_bib_lendings_cache(
-    onleihe: Onleihe,
-    downloaded_media_ids: Set[int],
-    keywords: Set[str],
-    config: AppConfig,
-    apobj: apprise.Apprise,
-    gourou_client: GourouClient,
-) -> tuple[bool, int]:
-    html = onleihe.fetch_my_bib_lendings()
-    if not html or _looks_like_login_page(html):
-        return False, 0
-    lendings = parse_my_bib_lendings(html)
-    total = len(lendings)
-    with_acsm = sum(1 for lending in lendings if lending.acsm_url)
-    counts = _process_my_bib_lendings(
-        lendings=lendings,
-        onleihe=onleihe,
-        downloaded_media_ids=downloaded_media_ids,
-        keywords=keywords,
-        config=config,
-        apobj=apobj,
-        gourou_client=gourou_client,
-        download_existing_acsm=False,
-    )
-    logger.debug(
-        "MyBib prime: parsed %d entries (%d with ACSM) seeded=%d attempted=%d downloaded=%d failed=%d skipped_known=%d skipped_keywords=%d skipped_no_acsm=%d lend_attempted=%d lend_failed=%d notified=%d",
-        total,
-        with_acsm,
-        counts["seeded"],
-        counts["attempted"],
-        counts["downloaded_ok"],
-        counts["downloaded_failed"],
-        counts["skipped_known"],
-        counts["skipped_keywords"],
-        counts["skipped_no_acsm"],
-        counts["lend_attempted"],
-        counts["lend_failed"],
-        counts["notified"],
-    )
-    return True, counts["seeded"] + counts["downloaded_ok"]
-
-
-def format_message(media: Media, availability_message: str) -> str:
-    if isinstance(media, Book):
-        return (
-            f"[{media.format.upper()}] <b><a href=\"{media.full_url}\">{media.title} - {media.author}</a></b> "
-            f"{availability_message}"
-        )
-    if isinstance(media, Magazine):
-        return f"[MAGAZINE] <b><a href=\"{media.full_url}\">{media.title}</a></b> {availability_message}"
-    return f"<b><a href=\"{media.full_url}\">{media.title}</a></b> {availability_message}"
+        return False, None
 
 
 def run_startup_checks(config: AppConfig) -> None:
     if config.gourou.remove_drm:
         if config.gourou.remove_drm_ack != DRM_ACK_TOKEN:
             logger.warning(
-                "DRM removal requested but not acknowledged; please acknowledge the DRM removal conditions by setting "
-                "gourou.remove_drm_ack or ONLEIHARR_GOUROU_ACK_DRM to '%s'. Disabling DRM removal.",
+                "DRM removal requested but not acknowledged; set gourou.remove_drm_ack or "
+                "ONLEIHARR_GOUROU_ACK_DRM to '%s'. Disabling DRM removal.",
                 DRM_ACK_TOKEN,
             )
             config.gourou.remove_drm = False
         else:
-            logger.warning(
-                "DRM removal is enabled. Ensure this is legal in your jurisdiction. "
-                "Onleiharr only calls third-party libgourou; see DISCLAIMER.md."
-            )
+            logger.warning("DRM removal is enabled. Ensure this is legal in your jurisdiction.")
 
 
-def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
-    keywords = load_keywords_from_config(config.general.keywords)
-    apobj = build_apprise(config)
-    onleihe = Onleihe(
-        library=config.credentials.library,
-        library_id=config.credentials.library_id,
-        username=config.credentials.username,
-        password=config.credentials.password,
-    )
+def build_gourou_client(config: AppConfig) -> GourouClient | None:
     gourou_client = GourouClient(config.gourou)
     if not gourou_client.has_binaries(["acsmdownloader"]):
         logger.warning(
-            "libgourou binaries not found; auto-download disabled (notifications and auto-rent still work). "
+            "libgourou binaries not found; auto-download disabled. "
             "Install them in PATH or set gourou.bin_dir / ONLEIHARR_GOUROU_BIN_DIR."
         )
-        gourou_client = None
+        return None
+    return gourou_client
 
-    known_media: Set[Media] = set()
-    rented_media_ids: Set[int] = set()
-    # De-dupe for downloads within a single run. This set is shared across:
-    # - immediate downloads after auto-rent
-    # - periodic "Mein Konto / Ausgeliehen" scans (MyBib lendings)
-    downloaded_media_ids: Set[int] = set()
 
-    lendings_interval_secs = float(config.gourou.lendings_poll_interval_secs)
-    lendings_enabled = gourou_client is not None and lendings_interval_secs > 0
-    lendings_cache_primed = False
-    # Use a monotonic clock for scheduling so system clock adjustments (NTP, manual changes)
-    # don't delay or accelerate scans unexpectedly.
-    lendings_next_check_ts: float | None = None
+def maybe_lend_or_reserve(
+    media: WatchedMedia,
+    client: OnleiheClient,
+    config: AppConfig,
+    gourou_client: GourouClient | None,
+    rented_media_ids: set[str],
+    downloaded_media_ids: set[str],
+) -> tuple[str, Path | None]:
+    if not media.keyword_matched:
+        return ("available" if media.available else availability_text(media)), None
+    if media.product_id in rented_media_ids:
+        return "already handled this run", None
 
-    if lendings_enabled:
-        primed, primed_count = prime_my_bib_lendings_cache(
-            onleihe=onleihe,
-            downloaded_media_ids=downloaded_media_ids,
-            keywords=keywords,
-            config=config,
-            apobj=apobj,
+    if media.available:
+        logger.info("%s is available, attempting auto lend", media.title)
+        lend_result = client.lend(media.product_id)
+        rented_media_ids.add(media.product_id)
+        acsm_url = lend_result.get("acsm_url") or media.acsm_url
+        download_path: Path | None = None
+        if media.media_type not in {"E_AUDIO", "AUDIO"}:
+            if media.product_id not in downloaded_media_ids:
+                downloaded, download_path = download_acsm_with_gourou(
+                    product_id=media.product_id,
+                    title=media.title,
+                    acsm_url=acsm_url,
+                    client=client,
+                    gourou_client=gourou_client,
+                )
+                if downloaded:
+                    downloaded_media_ids.add(media.product_id)
+        else:
+            logger.info("Skipping download for audio media '%s'.", media.title)
+        return "auto lent :)", download_path
+
+    logger.info("%s is unavailable, attempting to reserve", media.title)
+    client.reserve(media.product_id)
+    rented_media_ids.add(media.product_id)
+    return f"auto reserved - {availability_text(media)}", None
+
+
+def availability_text(media: WatchedMedia) -> str:
+    if media.available:
+        return "available"
+    if media.availability_text:
+        return f"not available until <b>{media.availability_text}</b>"
+    return "not available"
+
+
+def process_my_media_downloads(
+    client: OnleiheClient,
+    config: AppConfig,
+    apobj: apprise.Apprise,
+    gourou_client: GourouClient | None,
+    downloaded_media_ids: set[str],
+    *,
+    seed_only: bool,
+) -> int:
+    if gourou_client is None:
+        return 0
+    handled = 0
+    for item in client.get_my_media_items(include_player_licences=False):
+        product_id = item.product_id or item.id
+        if not product_id or product_id in downloaded_media_ids:
+            continue
+        if config.gourou.lendings_download_keywords_only and not matches_any_watch(item, config):
+            continue
+        if seed_only and (item.acsm_url or item.lend_id):
+            downloaded_media_ids.add(product_id)
+            handled += 1
+            continue
+        acsm_url = item.acsm_url
+        if not acsm_url and item.lend_id and not seed_only:
+            licence = client.get_player_licence(item.lend_id)
+            acsm_url = licence.get("acsm_url")
+        if not acsm_url:
+            continue
+        downloaded, download_path = download_acsm_with_gourou(
+            product_id=product_id,
+            title=item.title or product_id,
+            acsm_url=acsm_url,
+            client=client,
             gourou_client=gourou_client,
         )
-        if primed:
-            lendings_cache_primed = True
-            lendings_next_check_ts = time.monotonic() + lendings_interval_secs
-            logger.info(
-                "Primed MyBib lendings cache; seeded %d items; next scan in %d seconds",
-                primed_count,
-                int(lendings_interval_secs),
-            )
-        else:
-            retry_secs = min(600.0, lendings_interval_secs)
-            lendings_next_check_ts = time.monotonic() + retry_secs
-            logger.warning(
-                "Failed to prime MyBib lendings cache (not logged in or network error). Will retry in %ds.",
-                int(retry_secs),
-            )
+        if downloaded:
+            downloaded_media_ids.add(product_id)
+            handled += 1
+            if config.gourou.lendings_notify:
+                media = media_from_item(
+                    item,
+                    host=client.host,
+                    source="my-media",
+                    keyword_required=False,
+                    keyword_matched=True,
+                )
+                message = format_message(media, "auto downloaded") if media else f"<b>{product_id}</b> auto downloaded"
+                notify(apobj, message, attachments=[download_path] if download_path else None)
+    return handled
+
+
+def matches_any_watch(item: MediaItem, config: AppConfig) -> bool:
+    product_id = item.product_id or item.id
+    if product_id and product_id in config.general.watch_product_ids:
+        return True
+    return any(matches_filter(item, watch.keywords) for watch in config.general.watch_categories)
+
+
+def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
+    apobj = build_apprise(config)
+    client = create_onleihe_client(config)
+    gourou_client = build_gourou_client(config)
+
+    known_media_ids: set[str] = set()
+    rented_media_ids: set[str] = set()
+    downloaded_media_ids: set[str] = set()
     first_run = True
     test_notify = args.test_notification or config.notification.test_notification
+    lendings_interval_secs = float(config.gourou.lendings_poll_interval_secs)
+    lendings_enabled = gourou_client is not None and lendings_interval_secs > 0
+    lendings_next_check_ts: float | None = None
 
-    catalog_session = requests.Session()
     try:
+        login(client, config)
+        if lendings_enabled:
+            seeded = process_my_media_downloads(
+                client,
+                config,
+                apobj,
+                gourou_client,
+                downloaded_media_ids,
+                seed_only=True,
+            )
+            lendings_next_check_ts = time.monotonic() + lendings_interval_secs
+            logger.info("Primed my-media cache with %d items.", seeded)
+
         while True:
-            try:
-                current_media_list: list[Media] = []
-                current_media: Set[Media] = set()
-                fetch_elements = 100 if first_run else 50
-                for url in config.general.urls:
-                    try:
-                        url_media = list(fetch_media(url, elements=fetch_elements, session=catalog_session))
-                        logger.debug("Fetched %d media items from %s", len(url_media), url)
-                        if not url_media:
-                            logger.warning("No media found for url; check configuration: %s", url)
-                        current_media_list.extend(url_media)
-                    except RequestException as exc:
-                        logger.error("Network error while processing url %s: %s", url, exc)
-                    except Exception as exc:
-                        logger.exception("Unexpected error while processing url %s: %s", url, exc)
+            current_media_list = fetch_all_watched_media(client, config, log_summary=first_run)
+            current_media_by_id = {media.product_id: media for media in current_media_list}
+            current_media_ids = set(current_media_by_id)
 
-                if current_media_list:
-                    current_media = set(current_media_list)
-
-                if first_run:
-                    logger.info(
-                        "Primed media cache with %d media items (first run); now polling every %d seconds",
-                        len(current_media),
-                        int(config.general.poll_interval_secs),
-                    )
-                    if logger.isEnabledFor(logging.DEBUG):
-                        for media in current_media:
-                            logger.debug("[CACHE] %s", media)
-                    known_media = current_media
-                    first_run = False
-
-                    if test_notify:
-                        if current_media_list:
-                            last_media = current_media_list[-1]
-                            logger.info("Test notification mode: sending notify for '%s'.", last_media.title)
-                            notify_message = format_message(last_media, "test notification")
-                            notify(apobj, notify_message)
-                        else:
-                            logger.warning("Test notification requested but no media found on first run.")
+            if first_run:
+                known_media_ids = current_media_ids
+                first_run = False
+                logger.info(
+                    "Primed media cache with %d media items; now polling every %d seconds",
+                    len(known_media_ids),
+                    int(config.general.poll_interval_secs),
+                )
+                if test_notify and current_media_list:
+                    media = current_media_list[-1]
+                    notify(apobj, format_message(media, "test notification"))
+            else:
+                new_media_ids = current_media_ids - known_media_ids
+                if new_media_ids:
+                    logger.info("Found %d new media items", len(new_media_ids))
                 else:
-                    new_media = current_media - known_media
-                    if new_media:
-                        logger.info("Found %d new media items", len(new_media))
-                    else:
-                        logger.debug("No new media found this cycle")
-                    for media in new_media:
-                        try:
-                            auto_rent = False
-                            auto_reserve = False
-                            download_path: Path | None = None
-                            if matches_filter(media.title, keywords):
-                                logger.info("%s matches filter", media.title)
-                                if media.available:
-                                    logger.info("%s is available, attempting auto rent", media.title)
-                                    if media.id in rented_media_ids:
-                                        logger.debug("Media id %s already rented in this run; skipping.", media.id)
-                                    else:
-                                        rent_result = onleihe.rent_media(media)
-                                        if rent_result:
-                                            auto_rent = True
-                                            rented_media_ids.add(media.id)
-                                            if media.format != "audio":
-                                                if media.id in downloaded_media_ids:
-                                                    logger.debug(
-                                                        "Media id %s already downloaded in this run; skipping.",
-                                                        media.id,
-                                                    )
-                                                else:
-                                                    downloaded, download_path = download_media_with_gourou(
-                                                        media, rent_result, onleihe, gourou_client
-                                                    )
-                                                    if downloaded:
-                                                        downloaded_media_ids.add(media.id)
-                                            else:
-                                                logger.info("Skipping download for audio media '%s'.", media.title)
-                                else:
-                                    logger.info("%s is unavailable, attempting to reserve", media.title)
-                                    onleihe.reserve_media(media, config.notification.email or "")
-                                    auto_reserve = True
+                    logger.debug("No new media found this cycle")
 
-                            if auto_rent:
-                                availability_message = "auto rented :)"
-                            elif auto_reserve:
-                                availability_message = (
-                                    f"auto reserved - available at <b>{media.availability_date}</b>"
-                                )
-                            elif media.available:
-                                availability_message = "available"
-                            else:
-                                availability_message = f"not available until <b>{media.availability_date}</b>"
+                for product_id in new_media_ids:
+                    media = current_media_by_id[product_id]
+                    try:
+                        message, download_path = maybe_lend_or_reserve(
+                            media,
+                            client,
+                            config,
+                            gourou_client,
+                            rented_media_ids,
+                            downloaded_media_ids,
+                        )
+                        notify(
+                            apobj,
+                            format_message(media, message),
+                            attachments=[download_path] if download_path else None,
+                        )
+                    except (OnleiheAPIError, OnleiheAuthError) as exc:
+                        logger.exception("Onleihe API error handling media '%s': %s", media.title, exc)
+                    except Exception as exc:
+                        logger.exception("Error handling media '%s': %s", media.title, exc)
 
-                            notify_message = format_message(media, availability_message)
-                            logger.info("Notify: %s", notify_message)
-                            notify(
-                                apobj,
-                                notify_message,
-                                attachments=[download_path] if download_path else None,
-                            )
-                        except Exception as exc:
-                            logger.exception("Error handling media '%s': %s", media.title, exc)
+                known_media_ids.update(new_media_ids)
 
-                    known_media.update(new_media)
-
-                # Periodically scan "Mein Konto / Ausgeliehen" to download ACSM links that only appear
-                # after a reservation was fulfilled (i.e., loan is now active).
-                if lendings_enabled and lendings_next_check_ts is not None:
-                    now = time.monotonic()
-                    if now >= lendings_next_check_ts:
-                        retry_secs = min(600.0, lendings_interval_secs)
-                        if not lendings_cache_primed:
-                            primed, primed_count = prime_my_bib_lendings_cache(
-                                onleihe=onleihe,
-                                downloaded_media_ids=downloaded_media_ids,
-                                keywords=keywords,
-                                config=config,
-                                apobj=apobj,
-                                gourou_client=gourou_client,
-                            )
-                            if primed:
-                                lendings_cache_primed = True
-                                lendings_next_check_ts = now + lendings_interval_secs
-                                logger.info(
-                                    "Primed MyBib lendings cache; seeded %d items; next scan in %d seconds",
-                                    primed_count,
-                                    int(lendings_interval_secs),
-                                )
-                            else:
-                                lendings_next_check_ts = now + retry_secs
-                                logger.warning(
-                                    "Failed to prime MyBib lendings cache (not logged in or network error). "
-                                    "Will retry in %ds.",
-                                    int(retry_secs),
-                                )
-                        else:
-                            html = onleihe.fetch_my_bib_lendings()
-                            if not html:
-                                logger.warning("Failed to fetch MyBib lendings page; skipping this scan.")
-                                lendings_next_check_ts = now + retry_secs
-                            elif _looks_like_login_page(html):
-                                logger.warning("MyBib lendings page looks like a login page; skipping this scan.")
-                                lendings_next_check_ts = now + retry_secs
-                            else:
-                                lendings = parse_my_bib_lendings(html)
-                                total = len(lendings)
-                                with_acsm = sum(1 for lending in lendings if lending.acsm_url)
-                                logger.debug("MyBib scan: parsed %d entries (%d with ACSM)", total, with_acsm)
-
-                                counts = _process_my_bib_lendings(
-                                    lendings=lendings,
-                                    onleihe=onleihe,
-                                    downloaded_media_ids=downloaded_media_ids,
-                                    keywords=keywords,
-                                    config=config,
-                                    apobj=apobj,
-                                    gourou_client=gourou_client,
-                                    download_existing_acsm=True,
-                                )
-                                logger.debug(
-                                    "MyBib scan: attempted=%d downloaded=%d failed=%d skipped_known=%d skipped_keywords=%d skipped_no_acsm=%d lend_attempted=%d lend_failed=%d notified=%d; next scan in %d seconds",
-                                    counts["attempted"],
-                                    counts["downloaded_ok"],
-                                    counts["downloaded_failed"],
-                                    counts["skipped_known"],
-                                    counts["skipped_keywords"],
-                                    counts["skipped_no_acsm"],
-                                    counts["lend_attempted"],
-                                    counts["lend_failed"],
-                                    counts["notified"],
-                                    int(lendings_interval_secs),
-                                )
-                                lendings_next_check_ts = now + lendings_interval_secs
-            except Exception as exc:
-                logger.exception("Unhandled error in polling loop: %s", exc)
+            if lendings_enabled and lendings_next_check_ts is not None and time.monotonic() >= lendings_next_check_ts:
+                count = process_my_media_downloads(
+                    client,
+                    config,
+                    apobj,
+                    gourou_client,
+                    downloaded_media_ids,
+                    seed_only=False,
+                )
+                logger.debug("My-media scan handled %d items.", count)
+                lendings_next_check_ts = time.monotonic() + lendings_interval_secs
 
             if args.once:
                 logger.info("--once set; exiting after first iteration")
@@ -749,10 +660,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
 
             time.sleep(config.general.poll_interval_secs)
     finally:
-        try:
-            catalog_session.close()
-        except Exception:
-            logger.debug("Failed to close catalog session.", exc_info=True)
+        client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -773,10 +681,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.install_user_systemd:
         if not config_path.exists():
             ensure_default_config(config_path)
-            logger.info(
-                "Created default config at %s. Please edit it before enabling the service.",
-                config_path,
-            )
+            logger.info("Created default config at %s. Please edit it before enabling the service.", config_path)
         install_user_systemd(config_path)
         return 0
 
@@ -792,6 +697,14 @@ def main(argv: list[str] | None = None) -> int:
         config.general.poll_interval_secs = args.interval
     if args.test_notification:
         config.notification.test_notification = True
+
+    logger.info(
+        "Loaded config from %s with %d product watches and %d category watches.",
+        config_path,
+        len(config.general.watch_product_ids),
+        len(config.general.watch_categories),
+    )
+    logger.debug("Configured product watch ids: %s", config.general.watch_product_ids)
 
     run_startup_checks(config)
 

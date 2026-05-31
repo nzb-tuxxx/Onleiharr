@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=65", "setuptools-scm>=8", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "onleiharr"
@@ -13,8 +13,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
   "apprise",
-  "beautifulsoup4",
-  "requests",
+  "httpx>=0.25",
   "tomli; python_version < '3.11'",
 ]
 keywords = ["onleiharr", "onleihe"]
@@ -29,19 +28,38 @@ classifiers = [
   "Intended Audience :: End Users/Desktop",
   "Environment :: Console",
 ]
+
 [project.urls]
 Homepage = "https://github.com/nzb-tuxxx/Onleiharr"
 Repository = "https://github.com/nzb-tuxxx/Onleiharr"
 Issues = "https://github.com/nzb-tuxxx/Onleiharr/issues"
 
-[tool.setuptools_scm]
-version_scheme = "post-release"
-local_scheme = "no-local-version"
-write_to = "onleiharr/_version.py"
-
 [project.scripts]
 onleiharr = "onleiharr.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["onleiharr"]
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "onleiharr/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["onleiharr"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/onleiharr",
+  "/tests",
+  "/README.md",
+  "/DISCLAIMER.md",
+  "/LICENSE",
+  "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "private_live: live non-invasive tests that require credentials",
+  "invasive_live: live tests that may mutate account state and must be explicitly enabled",
+]
