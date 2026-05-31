@@ -118,11 +118,12 @@ def test_category_watch_filters_by_keywords():
         sort_order="DESC",
     )
 
-    media = fetch_category_watch_media(client, watch)
+    result = fetch_category_watch_media(client, watch)
 
-    assert [item.product_id for item in media] == ["book-1"]
-    assert media[0].keyword_required is True
-    assert media[0].keyword_matched is True
+    assert [item.product_id for item in result.media] == ["book-1"]
+    assert result.total == 2
+    assert result.media[0].keyword_required is True
+    assert result.media[0].keyword_matched is True
     assert client.last_search_body["sort"] == [{"field": "licence.stockChangedTimestamp", "order": "DESC"}]
     assert client.last_search_body["postFilters"] == [
         {"field": "mediaType", "values": ["E_BOOK"]},

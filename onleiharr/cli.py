@@ -53,6 +53,12 @@ class WatchPollResult:
     errors: int = 0
 
 
+@dataclass(frozen=True)
+class CategoryWatchResult:
+    media: list[WatchedMedia]
+    total: int
+
+
 def load_version() -> str:
     try:
         from importlib.metadata import version as metadata_version
@@ -298,7 +304,7 @@ def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[Wa
     return media
 
 
-def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> list[WatchedMedia]:
+def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> CategoryWatchResult:
     body = client.build_category_search_body(
         watch.category_ids,
         sort=[{"field": watch.sort_field, "order": watch.sort_order}],
@@ -312,6 +318,7 @@ def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> l
     result = client.search_media(raw_body=body, require_login=False)
     media: list[WatchedMedia] = []
     source = f"category:{watch.description or ','.join(watch.category_ids[:2])}"
+    total = len(result.items)
     for item in result.items:
         keyword_matched = matches_filter(item, watch.keywords)
         if not keyword_matched:
@@ -325,7 +332,7 @@ def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> l
         )
         if converted:
             media.append(converted)
-    return media
+    return CategoryWatchResult(media=media, total=total)
 
 
 def merge_filters(filters: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -364,17 +371,23 @@ def fetch_all_watched_media(
             logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
     for watch in config.general.watch_categories:
         try:
-            category_media = fetch_category_watch_media(client, watch)
+            category_result = fetch_category_watch_media(client, watch)
             label = watch.description or ",".join(watch.category_ids[:2])
             if log_summary:
                 logger.info(
-                    "Primed category watch %s with %d keyword-matched media items.",
+                    "Primed category watch %s with %d keyword-matched media items (%d total).",
                     label,
-                    len(category_media),
+                    len(category_result.media),
+                    category_result.total,
                 )
             else:
-                logger.debug("Fetched %d matched media items for category watch %s", len(category_media), watch)
-            media.extend(category_media)
+                logger.debug(
+                    "Fetched %d matched media items out of %d total for category watch %s",
+                    len(category_result.media),
+                    category_result.total,
+                    watch,
+                )
+            media.extend(category_result.media)
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch category watch %s: %s", watch.description or watch.category_ids, exc)
