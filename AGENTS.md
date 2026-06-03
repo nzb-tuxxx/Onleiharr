@@ -37,7 +37,7 @@ Configuration Expectations
 - `onleiharr.toml` must define:
   - [general]: poll_interval_secs, watch_product_ids (optional list).
   - [[watch_categories]]: category_ids/category_urls plus keywords for each category watch.
-  - [notification]: urls list or apprise_config_path; test_notification; email optional.
+  - [notification]: urls list or apprise_config_path optional; test_notification; email optional.
   - [credentials]: username/password/host plus onleihe_name or onleihe_id, library_name or library_id.
 - Env overrides: `ONLEIHARR_CONFIG`, `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_HOST`, `ONLEIHARR_ONLEIHE_NAME`, `ONLEIHARR_ONLEIHE_ID`, `ONLEIHARR_LIBRARY_NAME`, `ONLEIHARR_LIBRARY_ID`, `ONLEIHARR_WATCH_PRODUCT_IDS`, `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, and the `ONLEIHARR_GOUROU_*` variables.
 - `watch_product_ids` are explicit product/series watches and do not use keyword checks.
@@ -49,6 +49,7 @@ Runtime Behaviors to Preserve
 - Product watches auto-lend/reserve without keyword filtering.
 - Category watches auto-lend/reserve only after keyword match.
 - Apprise notifications are HTML-rich strings; keep formatting intact.
+- Missing notification targets must not crash the watcher; log skipped notifications instead.
 - My-media/lendings polling uses the v3 API, not HTML scraping.
 - libgourou is optional; without binaries, notification and auto-lend/reserve still work.
 

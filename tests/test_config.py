@@ -51,6 +51,30 @@ def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp
     assert config.credentials.library_name == "Stadtbibliothek Achim"
 
 
+def test_load_config_allows_no_notification_targets_and_no_watches(tmp_path: Path):
+    body = """
+[general]
+poll_interval_secs = 300.0
+watch_product_ids = []
+
+[notification]
+urls = []
+
+[credentials]
+host = "niedersachsen.onleihe.de"
+onleihe_name = "Onleihe Niedersachsen"
+library_name = "Stadtbibliothek Achim"
+username = "user"
+password = "secret"
+"""
+
+    config = load_config(write_config(tmp_path, body))
+
+    assert config.notification.urls == []
+    assert config.general.watch_product_ids == []
+    assert config.general.watch_categories == []
+
+
 def test_load_config_accepts_id_credentials_and_env_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ONLEIHARR_USERNAME", "env-user")
     monkeypatch.setenv("ONLEIHARR_PASSWORD", "env-secret")
