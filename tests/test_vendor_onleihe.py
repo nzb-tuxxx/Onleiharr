@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from onleiharr._vendor.onleihe.client import OnleiheClient
-from onleiharr._vendor.onleihe.exceptions import OnleiheAPIError
+from onleiharr._vendor.onleihe.exceptions import OnleiheAPIError, OnleiheNotFoundError
 from onleiharr._vendor.onleihe.models import JobStatus
 from onleiharr._vendor.onleihe.models import SessionState
 from onleiharr._vendor.onleihe.parsers import parse_job_status
@@ -171,6 +171,32 @@ def test_transport_timeout_is_normalized_to_api_error():
 
     with pytest.raises(OnleiheAPIError, match="timed out"):
         client.maintenance_active()
+
+
+def test_no_such_element_response_is_not_found_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={
+                "message": "List is empty.",
+                "messageId": "no-such-element",
+                "status": "Internal Server Error",
+                "statusCode": 500,
+            },
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        client=http_client,
+    )
+
+    with pytest.raises(OnleiheNotFoundError) as exc_info:
+        client._get("/ui/v2/pages/product-details/missing")  # noqa: SLF001
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.payload["messageId"] == "no-such-element"
 
 
 def test_category_element_resolution_is_cached_per_client():

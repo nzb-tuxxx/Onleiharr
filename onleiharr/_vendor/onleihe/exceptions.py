@@ -13,5 +13,9 @@ class OnleiheAuthError(OnleiheAPIError):
     """Raised when authentication or token refresh fails."""
 
 
+class OnleiheNotFoundError(OnleiheAPIError):
+    """Raised when the API reports a missing entity."""
+
+
 class UnsupportedEndpointError(OnleiheError):
     """Raised for known missing API coverage."""

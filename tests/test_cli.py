@@ -5,16 +5,25 @@ import sys
 from types import SimpleNamespace
 
 import onleiharr.cli as cli
-from onleiharr._vendor.onleihe import MediaItem, OnleiheAPIError, OnleiheAuthError, ProductDetails, SearchResultPage
+from onleiharr._vendor.onleihe import (
+    MediaItem,
+    OnleiheAPIError,
+    OnleiheAuthError,
+    OnleiheNotFoundError,
+    ProductDetails,
+    SearchResultPage,
+)
 from onleiharr.cli import (
     WatchedMedia,
     build_apprise,
     fetch_all_watched_media,
     fetch_category_watch_media,
     fetch_product_watch_media,
+    format_message,
     lend_failure_allows_reserve,
     matches_filter,
     maybe_lend_or_reserve,
+    normalize_product_watch_ids,
     process_my_media_downloads,
 )
 from onleiharr.config import NotificationConfig, WatchCategory
@@ -37,7 +46,16 @@ class FakeClient:
                 title="Finanzen 04/2026",
                 subtitle=None,
                 media_type="E_MAGAZINE",
-                raw={"product": {"containerIds": ["series-1"]}},
+                raw={"product": {"isContainer": False, "containerIds": ["series-1"]}},
+            )
+        if product_id == "standalone":
+            return ProductDetails(
+                id=product_id,
+                product_id=product_id,
+                title="Single Book",
+                subtitle=None,
+                media_type="E_BOOK",
+                raw={"product": {"isContainer": False, "containerIds": []}},
             )
         return ProductDetails(
             id=product_id,
@@ -45,6 +63,7 @@ class FakeClient:
             title="Finanzen Reihe",
             subtitle=None,
             media_type="SERIES",
+            raw={"product": {"isContainer": True, "containerIds": []}},
             included_media=[
                 MediaItem(
                     id="issue-1",
@@ -114,6 +133,96 @@ def test_product_watch_resolves_single_issue_container_ids():
 
     assert [item.product_id for item in media] == ["issue-1"]
     assert media[0].source == "product:issue-with-container"
+
+
+def test_normalize_product_watch_ids_resolves_issue_ids_to_deduped_containers():
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            if product_id in {"issue-a", "issue-b"}:
+                return ProductDetails(
+                    id=product_id,
+                    product_id=product_id,
+                    title="Finanzen",
+                    subtitle="04/2026",
+                    media_type="E_MAGAZINE",
+                    raw={"product": {"isContainer": False, "containerIds": ["series-1"]}},
+                )
+            return super().get_product(product_id, include_user_context=include_user_context)
+
+    normalized = normalize_product_watch_ids(Client(), ["issue-a", "issue-b", "series-1"])
+
+    assert normalized == ["series-1"]
+
+
+def test_normalize_product_watch_ids_keeps_single_product_and_warns(caplog):
+    normalized = normalize_product_watch_ids(FakeClient(), ["standalone"])
+
+    assert normalized == ["standalone"]
+    assert "single product without container ids" in caplog.text
+
+
+def test_normalize_product_watch_ids_drops_initial_not_found_ids(caplog):
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            if product_id == "missing":
+                raise OnleiheNotFoundError(
+                    "not found",
+                    status_code=500,
+                    payload={"messageId": "no-such-element"},
+                )
+            return super().get_product(product_id, include_user_context=include_user_context)
+
+    normalized = normalize_product_watch_ids(Client(), ["missing", "series-1"])
+
+    assert normalized == ["series-1"]
+    assert "disabling this watch target" in caplog.text
+
+
+def test_fetch_all_watched_media_logs_not_found_without_traceback(caplog):
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            if product_id == "missing":
+                raise OnleiheNotFoundError(
+                    "not found",
+                    status_code=500,
+                    payload={"messageId": "no-such-element"},
+                )
+            return super().get_product(product_id, include_user_context=include_user_context)
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            watch_product_ids=["missing"],
+            watch_categories=[],
+        )
+    )
+
+    result = fetch_all_watched_media(Client(), config)  # type: ignore[arg-type]
+
+    assert result.media == []
+    assert result.errors == 1
+    assert "no longer exists" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+def test_format_message_includes_subtitle_in_display_title():
+    media = watched_media(product_id="magazine-1", available=True)
+    media = WatchedMedia(
+        product_id=media.product_id,
+        title="Stiftung Warentest Finanzen",
+        url=media.url,
+        media_type=media.media_type,
+        authors=media.authors,
+        subtitle="06/2026",
+        publication_date=media.publication_date,
+        available=media.available,
+        availability_text=media.availability_text,
+        acsm_url=media.acsm_url,
+        source=media.source,
+        keyword_required=media.keyword_required,
+        keyword_matched=media.keyword_matched,
+    )
+
+    assert "Stiftung Warentest Finanzen (06/2026)" in format_message(media, "auto lent")
 
 
 def test_category_watch_filters_by_keywords():

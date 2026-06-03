@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .exceptions import OnleiheAPIError, OnleiheAuthError
+from .exceptions import OnleiheAPIError, OnleiheAuthError, OnleiheNotFoundError
 from .models import (
     AccountInfo,
     JobStatus,
@@ -762,7 +762,14 @@ class OnleiheClient:
                 _retried=True,
             )
         payload = _safe_json(response)
-        exc = OnleiheAuthError if response.status_code in {401, 403} else OnleiheAPIError
+        if response.status_code == 404 or (
+            isinstance(payload, dict) and payload.get("messageId") == "no-such-element"
+        ):
+            exc = OnleiheNotFoundError
+        elif response.status_code in {401, 403}:
+            exc = OnleiheAuthError
+        else:
+            exc = OnleiheAPIError
         raise exc(
             f"Onleihe API request failed: {method} {url} returned {response.status_code}",
             status_code=response.status_code,

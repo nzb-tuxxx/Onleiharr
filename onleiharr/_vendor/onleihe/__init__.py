@@ -3,6 +3,7 @@ from .exceptions import (
     OnleiheAPIError,
     OnleiheAuthError,
     OnleiheError,
+    OnleiheNotFoundError,
     UnsupportedEndpointError,
 )
 from .models import (
@@ -32,6 +33,7 @@ __all__ = [
     "OnleiheClient",
     "OnleiheError",
     "OnleiheInfo",
+    "OnleiheNotFoundError",
     "ProductDetails",
     "SearchResultPage",
     "SessionState",

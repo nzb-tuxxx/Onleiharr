@@ -14,7 +14,14 @@ from typing import Iterable
 
 import apprise
 
-from onleiharr._vendor.onleihe import MediaItem, OnleiheAPIError, OnleiheAuthError, OnleiheClient
+from onleiharr._vendor.onleihe import (
+    MediaItem,
+    OnleiheAPIError,
+    OnleiheAuthError,
+    OnleiheClient,
+    OnleiheNotFoundError,
+    ProductDetails,
+)
 from onleiharr.config import (
     AppConfig,
     ConfigError,
@@ -307,17 +314,104 @@ def media_from_item(
     )
 
 
+def raw_product(product: ProductDetails) -> dict[str, object]:
+    raw = product.raw.get("product")
+    return raw if isinstance(raw, dict) else {}
+
+
+def product_is_container(product: ProductDetails) -> bool:
+    raw = raw_product(product)
+    return raw.get("isContainer") is True or bool(product.included_media)
+
+
+def product_container_ids(product: ProductDetails) -> list[str]:
+    container_ids = raw_product(product).get("containerIds", [])
+    if not isinstance(container_ids, list):
+        return []
+    return [str(container_id) for container_id in container_ids if container_id]
+
+
+def product_label(product: ProductDetails) -> str:
+    return (
+        " ".join(part for part in [product.title, product.subtitle] if part)
+        or product.product_id
+        or product.id
+        or "unknown"
+    )
+
+
+def normalize_product_watch_ids(client: OnleiheClient, product_ids: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    def add(product_id: str) -> None:
+        if product_id in seen:
+            return
+        seen.add(product_id)
+        normalized.append(product_id)
+
+    for product_id in product_ids:
+        try:
+            product = client.get_product(product_id, include_user_context=False)
+        except OnleiheNotFoundError as exc:
+            logger.error(
+                "Product watch %s does not exist in the Onleihe API; disabling this watch target: %s",
+                product_id,
+                exc,
+            )
+            continue
+        except Exception as exc:
+            logger.exception(
+                "Failed to resolve product watch %s during startup; keeping original id: %s",
+                product_id,
+                exc,
+            )
+            add(product_id)
+            continue
+
+        resolved_id = product.product_id or product.id or product_id
+        if product_is_container(product):
+            if resolved_id != product_id:
+                logger.info("Product watch %s resolves to container %s.", product_id, resolved_id)
+            add(str(resolved_id))
+            continue
+
+        container_ids = product_container_ids(product)
+        if container_ids:
+            logger.info(
+                "Product watch %s is issue \"%s\"; watching container id(s) instead: %s",
+                product_id,
+                product_label(product),
+                ", ".join(container_ids),
+            )
+            for container_id in container_ids:
+                add(container_id)
+            continue
+
+        logger.warning(
+            "Product watch %s is a single product without container ids; only this medium will be watched.",
+            product_id,
+        )
+        add(product_id)
+
+    if len(normalized) < len(product_ids):
+        logger.info(
+            "Deduplicated product watches from %d configured ids to %d effective ids.",
+            len(product_ids),
+            len(normalized),
+        )
+    return normalized
+
+
 def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[WatchedMedia]:
     product = client.get_product(product_id, include_user_context=False)
     items = product.included_media
     if not items:
-        container_ids = product.raw.get("product", {}).get("containerIds", [])
-        if isinstance(container_ids, list) and container_ids:
+        container_ids = product_container_ids(product)
+        if container_ids:
             items = []
             for container_id in container_ids:
-                if not container_id:
-                    continue
-                container = client.get_product(str(container_id), include_user_context=False)
+                container = client.get_product(container_id, include_user_context=False)
                 items.extend(container.included_media or [container])
             logger.debug(
                 "Resolved product watch %s through %d container ids to %d media items",
@@ -326,6 +420,11 @@ def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[Wa
                 len(items),
             )
     if not items:
+        if not product_is_container(product):
+            logger.warning(
+                "Product watch %s is a single product without container ids; only this medium will be watched.",
+                product_id,
+            )
         items = [product]
     media: list[WatchedMedia] = []
     for item in items:
@@ -403,6 +502,9 @@ def fetch_all_watched_media(
             else:
                 logger.debug("Fetched %d media items for product watch %s", len(product_media), product_id)
             media.extend(product_media)
+        except OnleiheNotFoundError as exc:
+            errors += 1
+            logger.error("Product watch %s no longer exists; skipping this poll: %s", product_id, exc)
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
@@ -431,10 +533,22 @@ def fetch_all_watched_media(
     return WatchPollResult(media=media, errors=errors)
 
 
+def display_title(media: WatchedMedia | MediaItem) -> str:
+    title = getattr(media, "title", None) or getattr(media, "product_id", None) or getattr(media, "id", None) or "unknown"
+    subtitle = getattr(media, "subtitle", None)
+    if not subtitle:
+        return str(title)
+    title_text = str(title)
+    subtitle_text = str(subtitle).strip()
+    if not subtitle_text or subtitle_text in title_text:
+        return title_text
+    return f"{title_text} ({subtitle_text})"
+
+
 def format_message(media: WatchedMedia, availability_message: str) -> str:
     label = media.media_type or "MEDIA"
     author = f" - {', '.join(media.authors)}" if media.authors else ""
-    return f"[{label}] <b><a href=\"{media.url}\">{media.title}{author}</a></b> {availability_message}"
+    return f"[{label}] <b><a href=\"{media.url}\">{display_title(media)}{author}</a></b> {availability_message}"
 
 
 def download_acsm_with_gourou(
@@ -652,6 +766,11 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
 
     try:
         login(client, config)
+        if config.general.watch_product_ids:
+            config.general.watch_product_ids = normalize_product_watch_ids(
+                client,
+                config.general.watch_product_ids,
+            )
         if lendings_enabled:
             try:
                 seeded = process_my_media_downloads(
