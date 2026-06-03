@@ -162,6 +162,7 @@ def parse_media_item(payload: dict[str, Any]) -> MediaItem:
         publisher=_publisher_name(product.get("publisher")),
         publication_date=product.get("publicationDate"),
         covers=list(product.get("covers") or []),
+        cover_url=_cover_url(product.get("covers")),
         categories=list(product.get("categories") or []),
         availability=dict(_get(payload, "status", "availabilityInformation", default={}) or {}),
         user_actions=list(payload.get("userAction") or []),
@@ -189,6 +190,7 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
         publisher=base.publisher,
         publication_date=base.publication_date,
         covers=base.covers,
+        cover_url=base.cover_url,
         categories=base.categories,
         availability=base.availability,
         user_actions=base.user_actions,
@@ -277,6 +279,23 @@ def _publisher_name(value) -> str | None:
     if isinstance(value, dict):
         return value.get("name")
     return value
+
+
+def _cover_url(covers: Any) -> str | None:
+    if not isinstance(covers, list):
+        return None
+    candidates = [cover for cover in covers if isinstance(cover, dict) and cover.get("uri")]
+    if not candidates:
+        return None
+
+    def score(cover: dict[str, Any]) -> tuple[int, int]:
+        cover_type = str(cover.get("type") or "")
+        size = cover.get("size")
+        size_value = size if isinstance(size, int) else 0
+        type_score = 2 if cover_type.startswith("IMAGE") else 1 if cover_type.startswith("TEASER") else 0
+        return type_score, size_value
+
+    return str(max(candidates, key=score)["uri"])
 
 
 def _iter_media_payloads(payload: Any):

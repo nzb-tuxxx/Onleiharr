@@ -24,6 +24,7 @@ from onleiharr.cli import (
     matches_filter,
     maybe_lend_or_reserve,
     normalize_product_watch_ids,
+    notify,
     process_my_media_downloads,
 )
 from onleiharr.config import NotificationConfig, WatchCategory
@@ -73,6 +74,7 @@ class FakeClient:
                     media_type="E_MAGAZINE",
                     authors=[],
                     availability={"isAvailable": True},
+                    cover_url="https://static.example/cover.jpg",
                 )
             ],
         )
@@ -126,6 +128,7 @@ def test_product_watch_expands_included_media_without_keyword_check():
     assert media[0].keyword_required is False
     assert media[0].keyword_matched is True
     assert media[0].url == "https://example.onleihe.de/mymedia/mediadetail?productId=issue-1"
+    assert media[0].cover_url == "https://static.example/cover.jpg"
 
 
 def test_product_watch_resolves_single_issue_container_ids():
@@ -223,6 +226,52 @@ def test_format_message_includes_subtitle_in_display_title():
     )
 
     assert "Stiftung Warentest Finanzen (06/2026)" in format_message(media, "auto lent")
+
+
+def test_notify_passes_cover_url_as_attachment_when_supported():
+    class Server:
+        attachment_support = True
+
+    class Apprise:
+        calls = []
+
+        def find(self):
+            return [Server()]
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+
+    apobj = Apprise()
+
+    notify(apobj, "message", image_urls=["https://static.example/cover.jpg"])  # type: ignore[arg-type]
+
+    assert apobj.calls == [
+        {
+            "title": "Onleihe: New media",
+            "body": "message",
+            "attach": ["https://static.example/cover.jpg"],
+        }
+    ]
+
+
+def test_notify_omits_cover_url_when_attachments_are_unsupported():
+    class Server:
+        attachment_support = False
+
+    class Apprise:
+        calls = []
+
+        def find(self):
+            return [Server()]
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+
+    apobj = Apprise()
+
+    notify(apobj, "message", image_urls=["https://static.example/cover.jpg"])  # type: ignore[arg-type]
+
+    assert apobj.calls == [{"title": "Onleihe: New media", "body": "message"}]
 
 
 def test_category_watch_filters_by_keywords():

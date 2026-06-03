@@ -106,6 +106,7 @@ class MediaItem:
     publisher: str | None = None
     publication_date: str | None = None
     covers: list[JSON] = field(default_factory=list)
+    cover_url: str | None = None
     categories: list[JSON] = field(default_factory=list)
     availability: JSON = field(default_factory=dict)
     user_actions: list[JSON] = field(default_factory=list)

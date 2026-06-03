@@ -52,6 +52,7 @@ class WatchedMedia:
     source: str
     keyword_required: bool
     keyword_matched: bool
+    cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -238,7 +239,8 @@ def apprise_supports_attachments(apobj: apprise.Apprise | None) -> bool:
 def notify(
     apobj: apprise.Apprise | None,
     message: str,
-    attachments: Iterable[Path] | None = None,
+    attachments: Iterable[Path | str] | None = None,
+    image_urls: Iterable[str] | None = None,
 ) -> None:
     if apobj is None:
         logger.warning("Notification skipped because no Apprise targets are configured: %s", message)
@@ -246,15 +248,20 @@ def notify(
     attachment_paths: list[str] = []
     if attachments:
         for attachment in attachments:
-            if attachment.exists():
-                attachment_paths.append(str(attachment))
+            if isinstance(attachment, Path):
+                if attachment.exists():
+                    attachment_paths.append(str(attachment))
+                else:
+                    logger.warning("Attachment not found; skipping: %s", attachment)
             else:
-                logger.warning("Attachment not found; skipping: %s", attachment)
-        if attachment_paths:
-            if apprise_supports_attachments(apobj):
-                apobj.notify(title="Onleihe: New media", body=message, attach=attachment_paths)
-                return
-            logger.warning("No Apprise targets support attachments; sending notification without attachments.")
+                attachment_paths.append(str(attachment))
+    if image_urls:
+        attachment_paths.extend(str(url) for url in image_urls if url)
+    if attachment_paths:
+        if apprise_supports_attachments(apobj):
+            apobj.notify(title="Onleihe: New media", body=message, attach=attachment_paths)
+            return
+        logger.warning("No Apprise targets support attachments; sending notification without attachments.")
     apobj.notify(title="Onleihe: New media", body=message)
 
 
@@ -311,6 +318,7 @@ def media_from_item(
         source=source,
         keyword_required=keyword_required,
         keyword_matched=keyword_matched,
+        cover_url=item.cover_url,
     )
 
 
@@ -551,6 +559,10 @@ def format_message(media: WatchedMedia, availability_message: str) -> str:
     return f"[{label}] <b><a href=\"{media.url}\">{display_title(media)}{author}</a></b> {availability_message}"
 
 
+def media_image_urls(media: WatchedMedia | None) -> list[str]:
+    return [media.cover_url] if media and media.cover_url else []
+
+
 def download_acsm_with_gourou(
     *,
     product_id: str,
@@ -747,7 +759,12 @@ def process_my_media_downloads(
                     keyword_matched=True,
                 )
                 message = format_message(media, "auto downloaded") if media else f"<b>{product_id}</b> auto downloaded"
-                notify(apobj, message, attachments=[download_path] if download_path else None)
+                notify(
+                    apobj,
+                    message,
+                    attachments=[download_path] if download_path else None,
+                    image_urls=media_image_urls(media),
+                )
     return handled
 
 def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
@@ -813,7 +830,11 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 )
                 if test_notify and current_media_list:
                     media = current_media_list[-1]
-                    notify(apobj, format_message(media, "test notification"))
+                    notify(
+                        apobj,
+                        format_message(media, "test notification"),
+                        image_urls=media_image_urls(media),
+                    )
             else:
                 if poll_result.errors:
                     logger.warning(
@@ -841,6 +862,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                             apobj,
                             format_message(media, message),
                             attachments=[download_path] if download_path else None,
+                            image_urls=media_image_urls(media),
                         )
                     except (OnleiheAPIError, OnleiheAuthError) as exc:
                         logger.exception("Onleihe API error handling media '%s': %s", media.title, exc)

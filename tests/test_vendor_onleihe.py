@@ -30,6 +30,18 @@ def test_product_details_include_container_product_includes():
                             "title": "Stiftung Warentest Finanzen 06/2026",
                             "mediaType": "E_MAGAZINE",
                             "publicationDate": "2026-05-20T03:30:00Z",
+                            "covers": [
+                                {
+                                    "type": "TEASER_LARGE",
+                                    "size": 37,
+                                    "uri": "https://static.example/teaser-large.jpg",
+                                },
+                                {
+                                    "type": "IMAGE_SMALL",
+                                    "size": 115,
+                                    "uri": "https://static.example/image-small.jpg",
+                                },
+                            ],
                         },
                         "status": {"availabilityInformation": {"isAvailable": True}},
                     },
@@ -49,6 +61,7 @@ def test_product_details_include_container_product_includes():
     assert [item.product_id for item in product.included_media] == ["issue-1", "issue-2"]
     assert product.included_media[0].publication_date == "2026-05-20T03:30:00Z"
     assert product.included_media[0].availability == {"isAvailable": True}
+    assert product.included_media[0].cover_url == "https://static.example/image-small.jpg"
 
 
 def test_parse_session_accepts_refresh_token_response_shape():
