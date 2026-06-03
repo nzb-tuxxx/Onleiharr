@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
+import sys
 from types import SimpleNamespace
 
+import onleiharr.cli as cli
 from onleiharr._vendor.onleihe import MediaItem, OnleiheAPIError, OnleiheAuthError, ProductDetails, SearchResultPage
 from onleiharr.cli import (
     WatchedMedia,
+    build_apprise,
     fetch_all_watched_media,
     fetch_category_watch_media,
     fetch_product_watch_media,
@@ -13,7 +17,12 @@ from onleiharr.cli import (
     maybe_lend_or_reserve,
     process_my_media_downloads,
 )
-from onleiharr.config import WatchCategory
+from onleiharr.config import NotificationConfig, WatchCategory
+
+
+class TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 class FakeClient:
@@ -271,6 +280,77 @@ def test_my_media_seed_primes_all_lendings_without_keyword_filter():
 
     assert count == 1
     assert downloaded_ids == {"loan-1"}
+
+
+def test_build_apprise_returns_none_without_targets():
+    config = SimpleNamespace(
+        notification=NotificationConfig(
+            urls=[],
+            apprise_config_path=None,
+            test_notification=False,
+            email=None,
+        )
+    )
+
+    assert build_apprise(config) is None  # type: ignore[arg-type]
+
+
+def test_init_config_existing_interactive_decline_keeps_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("existing", encoding="utf-8")
+    called = False
+
+    def fake_wizard(path, *, version):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("\n"))
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+
+    assert cli.main(["--init-config", "-c", str(config_path)]) == 0
+    assert called is False
+    assert config_path.read_text(encoding="utf-8") == "existing"
+
+
+def test_init_config_existing_interactive_accept_runs_wizard(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("existing", encoding="utf-8")
+    called_with = None
+
+    def fake_wizard(path, *, version):
+        nonlocal called_with
+        called_with = path
+        path.write_text("new", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("y\n"))
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+
+    assert cli.main(["--init-config", "-c", str(config_path)]) == 0
+    assert called_with == config_path
+    assert config_path.read_text(encoding="utf-8") == "new"
+
+
+def test_init_config_existing_non_interactive_refuses_overwrite(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("existing", encoding="utf-8")
+    called = False
+
+    def fake_wizard(path, *, version):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+
+    assert cli.main(["--init-config", "-c", str(config_path)]) == 1
+    assert called is False
+    assert config_path.read_text(encoding="utf-8") == "existing"
 
 
 def watched_media(*, product_id: str, available: bool) -> WatchedMedia:

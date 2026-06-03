@@ -216,8 +216,6 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     watch_product_ids = _dedupe(_env_list(environ.get("ONLEIHARR_WATCH_PRODUCT_IDS"))
                                 or _string_list(general_section.get("watch_product_ids")))
     watch_categories = _load_watch_categories(data.get("watch_categories", []))
-    if not watch_product_ids and not watch_categories:
-        raise ConfigError("No watch targets configured. Set [general].watch_product_ids or [[watch_categories]].")
 
     apprise_urls = _env_list(environ.get("ONLEIHARR_APPRISE_URLS")) or _string_list(
         notification_section.get("urls")
@@ -225,11 +223,6 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     apprise_value = environ.get("ONLEIHARR_APPRISE_CONFIG") or notification_section.get("apprise_config_path")
     apprise_path = _resolve_optional_path_value(str(apprise_value), base=path.parent) if apprise_value else None
     email = environ.get("ONLEIHARR_EMAIL") or notification_section.get("email") or None
-    if not apprise_urls and apprise_path is None:
-        raise ConfigError(
-            "No apprise URLs configured. Set [notification].urls or ONLEIHARR_APPRISE_URLS, "
-            "or provide apprise_config_path."
-        )
 
     test_notification_env = environ.get("ONLEIHARR_TEST_NOTIFICATION")
     test_notification = (

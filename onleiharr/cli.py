@@ -20,10 +20,10 @@ from onleiharr.config import (
     ConfigError,
     WatchCategory,
     default_config_path,
-    ensure_default_config,
     load_config,
 )
 from onleiharr.gourou import GourouClient, GourouError
+from onleiharr.wizard import run_first_start_wizard
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Install a user-mode systemd unit for onleiharr",
     )
     parser.add_argument(
+        "--init-config",
+        action="store_true",
+        dest="init_config",
+        help="Run the first-start configuration wizard",
+    )
+    parser.add_argument(
+        "--no-wizard",
+        action="store_true",
+        dest="no_wizard",
+        help="Do not start the interactive wizard when the config is missing",
+    )
+    parser.add_argument(
         "--log-level",
         dest="log_level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -152,12 +164,31 @@ def resolve_config_path(args: argparse.Namespace) -> Path:
     return default_config_path()
 
 
-def ensure_config_or_exit(path: Path) -> None:
+def ensure_config_or_exit(path: Path, *, allow_wizard: bool = True) -> None:
     if path.exists():
         return
-    ensure_default_config(path)
-    logger.info("Created default config at %s. Please edit it before running again.", path)
+    if allow_wizard and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            created = run_first_start_wizard(path, version=load_version())
+        except KeyboardInterrupt:
+            logger.info("Wizard interrupted; no config written.")
+            sys.exit(1)
+        if created:
+            return
+        logger.info("Wizard cancelled; no config written.")
+        sys.exit(1)
+    logger.error(
+        "Config file not found at %s. Run 'onleiharr --init-config%s' in an interactive terminal.",
+        path,
+        f" -c {path}" if path else "",
+    )
     sys.exit(1)
+
+
+def confirm_config_overwrite(path: Path) -> bool:
+    logger.warning("Config already exists at %s.", path)
+    answer = input(f"Overwrite and create a new config at {path}? [y/N]: ").strip().casefold()
+    return answer in {"y", "yes", "j", "ja"}
 
 
 def matches_filter(media: WatchedMedia | MediaItem, filters: Iterable[str]) -> bool:
@@ -173,7 +204,7 @@ def matches_filter(media: WatchedMedia | MediaItem, filters: Iterable[str]) -> b
     return any(entry.lower() in haystack for entry in filters)
 
 
-def build_apprise(config: AppConfig) -> apprise.Apprise:
+def build_apprise(config: AppConfig) -> apprise.Apprise | None:
     apobj = apprise.Apprise()
 
     for url in config.notification.urls:
@@ -185,20 +216,26 @@ def build_apprise(config: AppConfig) -> apprise.Apprise:
         apobj.add(apprise_config)
 
     if not apobj:
-        raise ConfigError("No apprise notification targets configured.")
+        logger.warning("No Apprise notification targets configured; notifications disabled.")
+        return None
 
     return apobj
 
 
-def apprise_supports_attachments(apobj: apprise.Apprise) -> bool:
+def apprise_supports_attachments(apobj: apprise.Apprise | None) -> bool:
+    if apobj is None:
+        return False
     return any(getattr(server, "attachment_support", False) for server in apobj.find())
 
 
 def notify(
-    apobj: apprise.Apprise,
+    apobj: apprise.Apprise | None,
     message: str,
     attachments: Iterable[Path] | None = None,
 ) -> None:
+    if apobj is None:
+        logger.warning("Notification skipped because no Apprise targets are configured: %s", message)
+        return
     attachment_paths: list[str] = []
     if attachments:
         for attachment in attachments:
@@ -554,7 +591,7 @@ def availability_text(media: WatchedMedia) -> str:
 def process_my_media_downloads(
     client: OnleiheClient,
     config: AppConfig,
-    apobj: apprise.Apprise,
+    apobj: apprise.Apprise | None,
     gourou_client: GourouClient | None,
     downloaded_media_ids: set[str],
     *,
@@ -733,13 +770,28 @@ def main(argv: list[str] | None = None) -> int:
     config_path = resolve_config_path(args)
 
     if args.install_user_systemd:
-        if not config_path.exists():
-            ensure_default_config(config_path)
-            logger.info("Created default config at %s. Please edit it before enabling the service.", config_path)
+        ensure_config_or_exit(config_path, allow_wizard=not args.no_wizard)
         install_user_systemd(config_path)
         return 0
 
-    ensure_config_or_exit(config_path)
+    if args.init_config:
+        if config_path.exists():
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                logger.error("Config already exists at %s; refusing to overwrite in non-interactive mode.", config_path)
+                return 1
+            if not confirm_config_overwrite(config_path):
+                logger.info("Keeping existing config at %s.", config_path)
+                return 0
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            logger.error("--init-config requires an interactive terminal.")
+            return 1
+        try:
+            return 0 if run_first_start_wizard(config_path, version=version) else 1
+        except KeyboardInterrupt:
+            logger.info("Wizard interrupted; no config written.")
+            return 1
+
+    ensure_config_or_exit(config_path, allow_wizard=not args.no_wizard)
 
     try:
         config = load_config(config_path)
