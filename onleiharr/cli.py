@@ -199,6 +199,32 @@ def confirm_config_overwrite(path: Path) -> bool:
     return answer in {"y", "yes", "j", "ja"}
 
 
+def confirm_invalid_config_delete(path: Path, exc: ConfigError) -> bool:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+
+    logger.error("Configuration error in %s: %s", path, exc)
+    logger.error(
+        "If this config was migrated from an older v2-compatible Onleiharr release, "
+        "remove it and create a new v3 config. The old config format is not compatible."
+    )
+    answer = input(f"Delete invalid config at {path} and create a new one? [y/N]: ").strip().casefold()
+    return answer in {"y", "yes", "j", "ja"}
+
+
+def recover_invalid_config_or_exit(path: Path, exc: ConfigError, *, allow_wizard: bool) -> bool:
+    if not allow_wizard or not confirm_invalid_config_delete(path, exc):
+        return False
+    try:
+        path.unlink()
+    except OSError as unlink_exc:
+        logger.error("Failed to delete invalid config at %s: %s", path, unlink_exc)
+        return False
+    logger.info("Deleted invalid config at %s.", path)
+    ensure_config_or_exit(path, allow_wizard=allow_wizard)
+    return True
+
+
 def matches_filter(media: WatchedMedia | MediaItem, filters: Iterable[str]) -> bool:
     haystack = " ".join(
         part
@@ -230,10 +256,21 @@ def build_apprise(config: AppConfig) -> apprise.Apprise | None:
     return apobj
 
 
-def apprise_supports_attachments(apobj: apprise.Apprise | None) -> bool:
-    if apobj is None:
-        return False
-    return any(getattr(server, "attachment_support", False) for server in apobj.find())
+def target_supports_only_image_attachments(target: object) -> bool:
+    supported = getattr(target, "attach_supported_mime_type", None)
+    return isinstance(supported, str) and "image/" in supported and "|" not in supported
+
+
+def attachment_for_target(
+    target: object,
+    file_attachments: list[str],
+    image_attachments: list[str],
+) -> list[str]:
+    if not getattr(target, "attachment_support", False):
+        return []
+    if target_supports_only_image_attachments(target):
+        return image_attachments[:1]
+    return file_attachments or image_attachments[:1]
 
 
 def notify(
@@ -245,24 +282,37 @@ def notify(
     if apobj is None:
         logger.warning("Notification skipped because no Apprise targets are configured: %s", message)
         return
-    attachment_paths: list[str] = []
+    file_attachments: list[str] = []
+    image_attachments = [str(url) for url in image_urls or [] if url]
     if attachments:
         for attachment in attachments:
             if isinstance(attachment, Path):
                 if attachment.exists():
-                    attachment_paths.append(str(attachment))
+                    file_attachments.append(str(attachment))
                 else:
                     logger.warning("Attachment not found; skipping: %s", attachment)
             else:
-                attachment_paths.append(str(attachment))
-    if image_urls:
-        attachment_paths.extend(str(url) for url in image_urls if url)
-    if attachment_paths:
-        if apprise_supports_attachments(apobj):
-            apobj.notify(title="Onleihe: New media", body=message, attach=attachment_paths)
-            return
-        logger.warning("No Apprise targets support attachments; sending notification without attachments.")
-    apobj.notify(title="Onleihe: New media", body=message)
+                file_attachments.append(str(attachment))
+
+    if not file_attachments and not image_attachments:
+        apobj.notify(title="Onleihe: New media", body=message)
+        return
+
+    notified = False
+    unsupported_targets = 0
+    for target in apobj.find():
+        target_attachments = attachment_for_target(target, file_attachments, image_attachments)
+        if target_attachments:
+            target.notify(title="Onleihe: New media", body=message, attach=target_attachments)
+            notified = True
+            continue
+        unsupported_targets += 1
+        target.notify(title="Onleihe: New media", body=message)
+        notified = True
+    if unsupported_targets:
+        logger.warning("Some Apprise targets do not support usable attachments; sent text-only notification to them.")
+    if not notified:
+        logger.warning("No Apprise targets available for notification: %s", message)
 
 
 def create_onleihe_client(config: AppConfig) -> OnleiheClient:
@@ -937,8 +987,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(config_path)
     except ConfigError as exc:
-        logger.error("Configuration error: %s", exc)
-        return 1
+        if recover_invalid_config_or_exit(config_path, exc, allow_wizard=not args.no_wizard):
+            try:
+                config = load_config(config_path)
+            except ConfigError as retry_exc:
+                logger.error("Configuration error after recreating config: %s", retry_exc)
+                return 1
+        else:
+            logger.error("Configuration error: %s", exc)
+            return 1
 
     if args.interval is not None:
         config.general.poll_interval_secs = args.interval

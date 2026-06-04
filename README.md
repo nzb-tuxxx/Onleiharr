@@ -1,5 +1,12 @@
 # Onleiharr
 
+> [!WARNING]
+> **Onleiharr 0.3 is a Public Beta for Onleihe v3 only.**
+>
+> Install the 0.3 beta only if your Onleihe account/library already uses Onleihe v3. The beta can still contain bugs; please report issues at <https://github.com/nzb-tuxxx/Onleiharr/issues>.
+>
+> Onleihe v2 users should stay on the latest stable v2-compatible release. Normal `pip`/`pipx` installs do not pick pre-releases automatically; installing 0.3 requires explicitly opting in with `--pre`.
+
 Onleiharr watches Onleihe v3 products, product series, and category searches, sends notifications for new media, and can auto-lend/reserve matching items. The Onleihe v3 API client is vendored under `onleiharr/_vendor/onleihe`; no separate `onleihe` PyPI package is required.
 
 - Watch product or series IDs directly.
@@ -11,10 +18,23 @@ Onleiharr watches Onleihe v3 products, product series, and category searches, se
 ## Installation
 Requirements: Python 3.10+.
 
-Recommended:
+Stable / Onleihe v2-compatible:
 - `pipx install onleiharr`
 - `pipx upgrade onleiharr`
 - `onleiharr --version`
+
+Public Beta / Onleihe v3:
+- Fresh pipx install: `pipx install --pip-args=--pre onleiharr`
+- Existing pipx install: `pipx upgrade --pip-args=--pre onleiharr`
+- pip install: `pip install --pre onleiharr`
+- pip upgrade: `pip install --upgrade --pre onleiharr`
+- `onleiharr --version`
+
+Before starting the 0.3 beta after upgrading from a v2-compatible Onleiharr release, move or remove your old config file. The old v2 config format is not compatible with 0.3 because watches now use Onleihe v3 product/category IDs instead of legacy URLs. On first start, Onleiharr can create a new config with the interactive wizard; alternatively run `onleiharr --init-config` and choose the dummy config template.
+
+If `pipx upgrade --pip-args=--pre onleiharr` does not move an existing stable install to the beta, reinstall explicitly:
+- `pipx uninstall onleiharr`
+- `pipx install --pip-args=--pre onleiharr`
 
 From source:
 - `pip install -r requirements.txt`

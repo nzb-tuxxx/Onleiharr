@@ -228,24 +228,115 @@ def test_format_message_includes_subtitle_in_display_title():
     assert "Stiftung Warentest Finanzen (06/2026)" in format_message(media, "auto lent")
 
 
-def test_notify_passes_cover_url_as_attachment_when_supported():
+def test_notify_sends_cover_to_image_only_target_when_file_attachment_exists(tmp_path):
     class Server:
         attachment_support = True
+        attach_supported_mime_type = "^image/.*"
 
-    class Apprise:
-        calls = []
-
-        def find(self):
-            return [Server()]
+        def __init__(self):
+            self.calls = []
 
         def notify(self, **kwargs):
             self.calls.append(kwargs)
 
-    apobj = Apprise()
+    class Apprise:
+        def __init__(self, server):
+            self.server = server
+
+        def find(self):
+            return [self.server]
+
+        def notify(self, **kwargs):
+            raise AssertionError("aggregate notify should not be used with attachments")
+
+    attachment = tmp_path / "download.pdf"
+    attachment.write_bytes(b"pdf")
+    server = Server()
+    apobj = Apprise(server)
+
+    notify(
+        apobj,
+        "message",
+        attachments=[attachment],
+        image_urls=["https://static.example/cover.jpg"],
+    )  # type: ignore[arg-type]
+
+    assert server.calls == [
+        {
+            "title": "Onleihe: New media",
+            "body": "message",
+            "attach": ["https://static.example/cover.jpg"],
+        }
+    ]
+
+
+def test_notify_preserves_file_attachment_for_general_attachment_target(tmp_path):
+    class Server:
+        attachment_support = True
+
+        def __init__(self):
+            self.calls = []
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class Apprise:
+        def __init__(self, server):
+            self.server = server
+
+        def find(self):
+            return [self.server]
+
+        def notify(self, **kwargs):
+            raise AssertionError("aggregate notify should not be used with attachments")
+
+    attachment = tmp_path / "download.pdf"
+    attachment.write_bytes(b"pdf")
+    server = Server()
+    apobj = Apprise(server)
+
+    notify(
+        apobj,
+        "message",
+        attachments=[attachment],
+        image_urls=["https://static.example/cover.jpg"],
+    )  # type: ignore[arg-type]
+
+    assert server.calls == [
+        {
+            "title": "Onleihe: New media",
+            "body": "message",
+            "attach": [str(attachment)],
+        }
+    ]
+
+
+def test_notify_uses_cover_for_general_target_when_no_file_attachment():
+    class Server:
+        attachment_support = True
+
+        def __init__(self):
+            self.calls = []
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class Apprise:
+        def __init__(self, server):
+            self.server = server
+
+        def find(self):
+            return [self.server]
+
+        def notify(self, **kwargs):
+            raise AssertionError("aggregate notify should not be used with attachments")
+
+    server = Server()
+    apobj = Apprise(server)
 
     notify(apobj, "message", image_urls=["https://static.example/cover.jpg"])  # type: ignore[arg-type]
 
-    assert apobj.calls == [
+    assert server.calls == [
         {
             "title": "Onleihe: New media",
             "body": "message",
@@ -258,20 +349,28 @@ def test_notify_omits_cover_url_when_attachments_are_unsupported():
     class Server:
         attachment_support = False
 
-    class Apprise:
-        calls = []
-
-        def find(self):
-            return [Server()]
+        def __init__(self):
+            self.calls = []
 
         def notify(self, **kwargs):
             self.calls.append(kwargs)
 
-    apobj = Apprise()
+    class Apprise:
+        def __init__(self, server):
+            self.server = server
+
+        def find(self):
+            return [self.server]
+
+        def notify(self, **kwargs):
+            raise AssertionError("aggregate notify should not be used with image URLs")
+
+    server = Server()
+    apobj = Apprise(server)
 
     notify(apobj, "message", image_urls=["https://static.example/cover.jpg"])  # type: ignore[arg-type]
 
-    assert apobj.calls == [{"title": "Onleihe: New media", "body": "message"}]
+    assert server.calls == [{"title": "Onleihe: New media", "body": "message"}]
 
 
 def test_category_watch_filters_by_keywords():
@@ -509,6 +608,85 @@ def test_init_config_existing_non_interactive_refuses_overwrite(tmp_path, monkey
     assert cli.main(["--init-config", "-c", str(config_path)]) == 1
     assert called is False
     assert config_path.read_text(encoding="utf-8") == "existing"
+
+
+def test_invalid_config_interactive_decline_keeps_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("watch_product_ids = ['legacy-url']\n", encoding="utf-8")
+    called = False
+
+    def fake_wizard(path, *, version):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("\n"))
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+
+    assert cli.main(["--once", "-c", str(config_path)]) == 1
+    assert called is False
+    assert config_path.exists()
+
+
+def test_invalid_config_interactive_accept_deletes_and_runs_wizard(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("watch_product_ids = ['legacy-url']\n", encoding="utf-8")
+    run_called = False
+
+    def fake_wizard(path, *, version):
+        assert not path.exists()
+        path.write_text(
+            """
+[general]
+poll_interval_secs = 300.0
+watch_product_ids = []
+
+[notification]
+urls = []
+
+[credentials]
+host = "niedersachsen.onleihe.de"
+onleihe_name = "Onleihe Niedersachsen"
+library_name = "Stadtbibliothek Achim"
+username = "user"
+password = "secret"
+""",
+            encoding="utf-8",
+        )
+        return True
+
+    def fake_run_loop(config, args):
+        nonlocal run_called
+        run_called = True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(cli, "run_loop", fake_run_loop)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("y\n"))
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+
+    assert cli.main(["--once", "-c", str(config_path)]) == 0
+    assert run_called is True
+    assert "watch_product_ids = []" in config_path.read_text(encoding="utf-8")
+
+
+def test_invalid_config_non_interactive_does_not_delete(tmp_path, monkeypatch):
+    config_path = tmp_path / "onleiharr.toml"
+    config_path.write_text("watch_product_ids = ['legacy-url']\n", encoding="utf-8")
+    called = False
+
+    def fake_wizard(path, *, version):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(cli, "run_first_start_wizard", fake_wizard)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+
+    assert cli.main(["--once", "-c", str(config_path)]) == 1
+    assert called is False
+    assert config_path.exists()
 
 
 def watched_media(*, product_id: str, available: bool) -> WatchedMedia:
