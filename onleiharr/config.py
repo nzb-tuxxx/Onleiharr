@@ -178,7 +178,7 @@ email = ""
 # bin_dir = "~/bin"
 # adept_dir = "~/.config/adept"
 # download_dir = "~/Downloads/Onleiharr"
-# download_permissions = "0644"
+download_permissions = "0644"
 # timeout_secs = 30.0
 # remove_drm = false
 # remove_drm_ack = "I_UNDERSTAND"
@@ -452,7 +452,9 @@ def _load_gourou(section: dict[str, Any], environ: os._Environ[str], *, base: Pa
             base=base,
         ),
         download_permissions=_parse_permissions(
-            environ.get("ONLEIHARR_GOUROU_DOWNLOAD_PERMISSIONS") or section.get("download_permissions")
+            environ.get("ONLEIHARR_GOUROU_DOWNLOAD_PERMISSIONS")
+            or section.get("download_permissions")
+            or "0644"
         ),
         timeout_secs=float(timeout if timeout is not None else section.get("timeout_secs", 30.0)),
         remove_drm=(

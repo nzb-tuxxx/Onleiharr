@@ -49,6 +49,32 @@ def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp
     assert config.credentials.host == "niedersachsen.onleihe.de"
     assert config.credentials.onleihe_name == "Onleihe Niedersachsen"
     assert config.credentials.library_name == "Stadtbibliothek Achim"
+    assert config.gourou.download_permissions == 0o644
+
+
+def test_gourou_download_permissions_can_be_overridden_by_config(tmp_path: Path):
+    body = base_config() + """
+[gourou]
+download_permissions = "0600"
+"""
+
+    config = load_config(write_config(tmp_path, body))
+
+    assert config.gourou.download_permissions == 0o600
+
+
+def test_gourou_download_permissions_can_be_overridden_by_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = base_config() + """
+[gourou]
+download_permissions = "0600"
+"""
+    monkeypatch.setenv("ONLEIHARR_GOUROU_DOWNLOAD_PERMISSIONS", "0640")
+
+    config = load_config(write_config(tmp_path, body))
+
+    assert config.gourou.download_permissions == 0o640
 
 
 def test_load_config_allows_no_notification_targets_and_no_watches(tmp_path: Path):

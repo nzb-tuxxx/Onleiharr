@@ -35,6 +35,7 @@ def test_build_config_text_loads_without_notifications_or_watches(tmp_path):
     assert config.general.watch_product_ids == []
     assert config.general.watch_categories == []
     assert config.credentials.library_name == "Stadtbibliothek Achim"
+    assert config.gourou.download_permissions == 0o644
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -63,6 +64,8 @@ def test_build_config_text_writes_product_and_category_watches(tmp_path):
 
     config = load_config(path, env={})
 
+    assert '# bin_dir = "~/bin"' in text
+    assert 'download_permissions = "0644"' in text
     assert config.general.watch_product_ids == ["product-1"]
     assert config.general.watch_categories[0].category_ids == ["cat-1"]
     assert config.general.watch_categories[0].keywords == ["python"]
