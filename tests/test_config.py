@@ -128,15 +128,14 @@ def test_extract_category_ids_from_url_decodes_browser_categories():
 def test_load_config_derives_media_type_and_sort_from_category_url(tmp_path: Path):
     body = base_config().replace(
         "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%2C%22cat-1%22%5D",
-        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%5D&mediaType=E_BOOK&language=ger&authors_fullName=Ada&publisher.name=Pub&rating.value=4&licence.isAvailable=true&sortField=licence.stockChangedTimestamp&sortType=ascending",
+        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%5D&mediaType=E_BOOK%2CE_AUDIO&language=ger&authors_fullName=Ada&publisher.name=Pub&rating.value=4&licence.isAvailable=true&sortField=licence.stockChangedTimestamp&sortType=ascending",
     )
 
     config = load_config(write_config(tmp_path, body))
     watch = config.general.watch_categories[0]
 
-    assert watch.media_types == ["E_BOOK"]
+    assert watch.media_types == ["E_BOOK", "E_AUDIO"]
     assert watch.filters == [
-        {"field": "mediaType", "values": ["E_BOOK"]},
         {"field": "language", "values": ["ger"]},
         {"field": "authors_fullName", "values": ["Ada"]},
         {"field": "publisher.name", "values": ["Pub"]},

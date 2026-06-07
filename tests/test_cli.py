@@ -84,17 +84,18 @@ class FakeClient:
 
     def build_category_search_body(self, category_ids, *, sort):
         assert category_ids == ["cat-1", "cat-2"]
-        self.last_search_body = {
+        return {
             "query": [{"query": "U", "fields": ["categories.id"], "operator": "OR"}],
             "postFilters": [],
             "sort": sort,
             "size": 50,
         }
-        return self.last_search_body
 
     def search_media(self, *, raw_body, require_login: bool = False) -> SearchResultPage:
         assert require_login is False
         self.last_search_body = raw_body
+        self.search_bodies = getattr(self, "search_bodies", [])
+        self.search_bodies.append(raw_body)
         return SearchResultPage(
             items=[
                 MediaItem(
@@ -115,8 +116,17 @@ class FakeClient:
                     authors=[],
                     availability={"isAvailable": True},
                 ),
+                MediaItem(
+                    id="audio-1",
+                    product_id="audio-1",
+                    title="Python Hoerbuch",
+                    subtitle=None,
+                    media_type="E_AUDIO",
+                    authors=["Ada Lovelace"],
+                    availability={"isAvailable": True},
+                ),
             ],
-            total_items=2,
+            total_items=3,
         )
 
 
@@ -378,7 +388,7 @@ def test_category_watch_filters_by_keywords():
     watch = WatchCategory(
         category_ids=["cat-1", "cat-2"],
         keywords=["python"],
-        media_types=["E_BOOK"],
+        media_types=["E_BOOK", "E_AUDIO"],
         filters=[{"field": "language", "values": ["ger"]}],
         sort_field="licence.stockChangedTimestamp",
         sort_order="DESC",
@@ -386,13 +396,14 @@ def test_category_watch_filters_by_keywords():
 
     result = fetch_category_watch_media(client, watch)
 
-    assert [item.product_id for item in result.media] == ["book-1"]
-    assert result.total == 2
+    assert [item.product_id for item in result.media] == ["book-1", "audio-1"]
+    assert result.total == 3
     assert result.media[0].keyword_required is True
     assert result.media[0].keyword_matched is True
+    assert len(client.search_bodies) == 1
     assert client.last_search_body["sort"] == [{"field": "licence.stockChangedTimestamp", "order": "DESC"}]
     assert client.last_search_body["postFilters"] == [
-        {"field": "mediaType", "values": ["E_BOOK"]},
+        {"field": "mediaType", "values": ["E_BOOK", "E_AUDIO"], "type": "TERMS", "operator": "OR"},
         {"field": "language", "values": ["ger"]},
     ]
 

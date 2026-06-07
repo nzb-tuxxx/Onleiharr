@@ -412,16 +412,16 @@ def extract_category_ids_from_url(url: str) -> list[str]:
 
 def extract_category_options_from_url(url: str) -> CategoryUrlOptions:
     query = parse_qs(urlparse(url).query)
-    media_types = [value for value in query.get("mediaType", []) if value]
+    media_types = _split_query_values(query.get("mediaType", []))
     sort_field = (query.get("sortField") or [None])[0]
     filters = []
     for key, values in query.items():
         field = FILTER_QUERY_ALIASES.get(key, key)
-        if key in {"categories", "sortField", "sortType"}:
+        if key in {"categories", "mediaType", "sortField", "sortType"}:
             continue
         if field not in FILTER_QUERY_FIELDS:
             continue
-        clean_values = [value for value in values if value]
+        clean_values = _split_query_values(values)
         if clean_values:
             filters.append({"field": field, "values": clean_values})
     return CategoryUrlOptions(
@@ -430,6 +430,13 @@ def extract_category_options_from_url(url: str) -> CategoryUrlOptions:
         sort_field=sort_field,
         sort_order="DESC",
     )
+
+
+def _split_query_values(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        result.extend(part.strip() for part in value.split(",") if part.strip())
+    return result
 
 
 def _load_gourou(section: dict[str, Any], environ: os._Environ[str], *, base: Path) -> GourouConfig:

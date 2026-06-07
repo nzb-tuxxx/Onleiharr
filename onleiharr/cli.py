@@ -530,18 +530,40 @@ def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> C
 
 
 def merge_filters(filters: list[dict[str, object]]) -> list[dict[str, object]]:
-    by_field: dict[str, list[str]] = {}
+    by_field: dict[str, dict[str, object]] = {}
     for item in filters:
         field = item.get("field")
         values = item.get("values")
         if not isinstance(field, str) or not isinstance(values, list):
             continue
-        target = by_field.setdefault(field, [])
+        merged = by_field.setdefault(field, {"values": []})
+        target = merged["values"]
+        if not isinstance(target, list):
+            continue
+        if "type" in item and "type" not in merged:
+            merged["type"] = item["type"]
+        if "operator" in item and "operator" not in merged:
+            merged["operator"] = item["operator"]
         for value in values:
             value_str = str(value)
             if value_str not in target:
                 target.append(value_str)
-    return [{"field": field, "values": values} for field, values in by_field.items()]
+    result = []
+    for field, item in by_field.items():
+        values = item["values"]
+        if not isinstance(values, list):
+            continue
+        merged_filter = {"field": field, "values": values}
+        if len(values) > 1:
+            merged_filter["type"] = str(item.get("type") or "TERMS")
+            merged_filter["operator"] = str(item.get("operator") or "OR")
+        else:
+            if "type" in item:
+                merged_filter["type"] = str(item["type"])
+            if "operator" in item:
+                merged_filter["operator"] = str(item["operator"])
+        result.append(merged_filter)
+    return result
 
 
 def fetch_all_watched_media(
