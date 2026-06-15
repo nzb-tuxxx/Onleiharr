@@ -428,6 +428,54 @@ def test_fetch_all_watched_media_reports_target_errors():
     assert result.errors == 1
 
 
+def test_run_loop_checks_maintenance_after_poll_error_and_retries(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.maintenance_states = [True, False]
+            self.closed = False
+
+        def maintenance_active(self):
+            return self.maintenance_states.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    calls = []
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(
+        cli,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda secs: calls.append(("sleep", secs))),
+    )
+    monkeypatch.setattr(cli, "login", lambda client, config: calls.append(("login", None)))
+
+    def fake_fetch_all_watched_media(client, config, *, log_summary=False):
+        calls.append(("fetch", log_summary))
+        errors = 1 if len([call for call in calls if call[0] == "fetch"]) == 1 else 0
+        return cli.WatchPollResult(media=[], errors=errors)
+
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fake_fetch_all_watched_media)
+
+    cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
+
+    assert calls == [("login", None), ("fetch", True), ("sleep", 300.0), ("fetch", True)]
+    assert client.closed is True
+
+
 def test_matches_filter_uses_title_subtitle_and_authors():
     item = MediaItem(
         id="book-1",

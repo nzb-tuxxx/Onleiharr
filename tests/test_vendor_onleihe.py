@@ -186,6 +186,24 @@ def test_transport_timeout_is_normalized_to_api_error():
         client.maintenance_active()
 
 
+def test_maintenance_active_uses_rest_status_code():
+    status_codes = [200, 404]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://api.onleihe.de/maintenance"
+        return httpx.Response(status_codes.pop(0), text="Wartungsseite aktiviert")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        client=http_client,
+    )
+
+    assert client.maintenance_active() is True
+    assert client.maintenance_active() is False
+
+
 def test_no_such_element_response_is_not_found_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

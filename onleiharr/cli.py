@@ -839,6 +839,43 @@ def process_my_media_downloads(
                 )
     return handled
 
+
+def is_maintenance_active(client: OnleiheClient) -> bool:
+    try:
+        return client.maintenance_active()
+    except OnleiheAPIError as exc:
+        logger.warning("Could not check Onleihe maintenance status; continuing normal polling: %s", exc)
+        return False
+
+
+def wait_for_maintenance_end(
+    client: OnleiheClient,
+    poll_interval_secs: float,
+    *,
+    already_active: bool = False,
+) -> None:
+    waiting = already_active
+    if already_active:
+        time.sleep(poll_interval_secs)
+    while is_maintenance_active(client):
+        if not waiting:
+            logger.warning("Onleihe maintenance is active; suspending polling until maintenance ends.")
+        else:
+            logger.debug("Onleihe maintenance is still active; polling remains suspended.")
+        waiting = True
+        time.sleep(poll_interval_secs)
+    if waiting:
+        logger.info("Onleihe maintenance ended; resuming polling.")
+
+
+def suspend_if_maintenance_active(client: OnleiheClient, poll_interval_secs: float) -> bool:
+    if not is_maintenance_active(client):
+        return False
+    logger.warning("Watch poll failed while Onleihe maintenance is active; discarding this poll result.")
+    wait_for_maintenance_end(client, poll_interval_secs, already_active=True)
+    return True
+
+
 def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     apobj = build_apprise(config)
     client = create_onleihe_client(config)
@@ -878,6 +915,8 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
 
         while True:
             poll_result = fetch_all_watched_media(client, config, log_summary=first_run)
+            if poll_result.errors and suspend_if_maintenance_active(client, config.general.poll_interval_secs):
+                continue
             current_media_list = poll_result.media
             current_media_by_id = {media.product_id: media for media in current_media_list}
             current_media_ids = set(current_media_by_id)
