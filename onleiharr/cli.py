@@ -868,12 +868,60 @@ def wait_for_maintenance_end(
         logger.info("Onleihe maintenance ended; resuming polling.")
 
 
-def suspend_if_maintenance_active(client: OnleiheClient, poll_interval_secs: float) -> bool:
+def suspend_if_maintenance_active(
+    client: OnleiheClient,
+    poll_interval_secs: float,
+    *,
+    failed_operation: str,
+) -> bool:
     if not is_maintenance_active(client):
         return False
-    logger.warning("Watch poll failed while Onleihe maintenance is active; discarding this poll result.")
+    logger.warning("%s failed while Onleihe maintenance is active; retrying after maintenance ends.", failed_operation)
     wait_for_maintenance_end(client, poll_interval_secs, already_active=True)
     return True
+
+
+def initialize_onleihe_session(
+    client: OnleiheClient,
+    config: AppConfig,
+    apobj: apprise.Apprise | None,
+    gourou_client: GourouClient | None,
+    downloaded_media_ids: set[str],
+    lendings_enabled: bool,
+    lendings_interval_secs: float,
+) -> float | None:
+    while True:
+        try:
+            login(client, config)
+            if config.general.watch_product_ids:
+                config.general.watch_product_ids = normalize_product_watch_ids(
+                    client,
+                    config.general.watch_product_ids,
+                )
+            if not lendings_enabled:
+                return None
+            try:
+                seeded = process_my_media_downloads(
+                    client,
+                    config,
+                    apobj,
+                    gourou_client,
+                    downloaded_media_ids,
+                    seed_only=True,
+                )
+            except Exception as exc:
+                seeded = 0
+                logger.exception("Failed to prime my-media cache; will retry later: %s", exc)
+            logger.info("Primed my-media cache with %d items.", seeded)
+            return time.monotonic() + lendings_interval_secs
+        except OnleiheAPIError:
+            if suspend_if_maintenance_active(
+                client,
+                config.general.poll_interval_secs,
+                failed_operation="Onleihe startup",
+            ):
+                continue
+            raise
 
 
 def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
@@ -891,31 +939,23 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     lendings_next_check_ts: float | None = None
 
     try:
-        login(client, config)
-        if config.general.watch_product_ids:
-            config.general.watch_product_ids = normalize_product_watch_ids(
-                client,
-                config.general.watch_product_ids,
-            )
-        if lendings_enabled:
-            try:
-                seeded = process_my_media_downloads(
-                    client,
-                    config,
-                    apobj,
-                    gourou_client,
-                    downloaded_media_ids,
-                    seed_only=True,
-                )
-            except Exception as exc:
-                seeded = 0
-                logger.exception("Failed to prime my-media cache; will retry later: %s", exc)
-            lendings_next_check_ts = time.monotonic() + lendings_interval_secs
-            logger.info("Primed my-media cache with %d items.", seeded)
+        lendings_next_check_ts = initialize_onleihe_session(
+            client,
+            config,
+            apobj,
+            gourou_client,
+            downloaded_media_ids,
+            lendings_enabled,
+            lendings_interval_secs,
+        )
 
         while True:
             poll_result = fetch_all_watched_media(client, config, log_summary=first_run)
-            if poll_result.errors and suspend_if_maintenance_active(client, config.general.poll_interval_secs):
+            if poll_result.errors and suspend_if_maintenance_active(
+                client,
+                config.general.poll_interval_secs,
+                failed_operation="Watch poll",
+            ):
                 continue
             current_media_list = poll_result.media
             current_media_by_id = {media.product_id: media for media in current_media_list}
