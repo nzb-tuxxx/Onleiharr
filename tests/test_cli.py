@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import onleiharr.cli as cli
+import pytest
 from onleiharr._vendor.onleihe import (
     MediaItem,
     OnleiheAPIError,
@@ -146,6 +147,47 @@ def test_product_watch_resolves_single_issue_container_ids():
 
     assert [item.product_id for item in media] == ["issue-1"]
     assert media[0].source == "product:issue-with-container"
+
+
+def test_product_watch_rejects_container_without_included_media():
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            return ProductDetails(
+                id=product_id,
+                product_id=product_id,
+                title="Finanzen Reihe",
+                subtitle=None,
+                media_type="SERIES",
+                raw={"product": {"isContainer": True, "containerIds": []}},
+            )
+
+    with pytest.raises(OnleiheAPIError, match="container.*no included media"):
+        fetch_product_watch_media(Client(), "series-1")
+
+
+def test_product_watch_rejects_incomplete_resolved_container():
+    class Client(FakeClient):
+        def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
+            if product_id == "issue-1":
+                return ProductDetails(
+                    id=product_id,
+                    product_id=product_id,
+                    title="Finanzen 07/2026",
+                    subtitle=None,
+                    media_type="E_MAGAZINE",
+                    raw={"product": {"isContainer": False, "containerIds": ["series-1"]}},
+                )
+            return ProductDetails(
+                id=product_id,
+                product_id=product_id,
+                title="Finanzen Reihe",
+                subtitle=None,
+                media_type="SERIES",
+                raw={"product": {"isContainer": True, "containerIds": []}},
+            )
+
+    with pytest.raises(OnleiheAPIError, match="resolved to container.*no included media"):
+        fetch_product_watch_media(Client(), "issue-1")
 
 
 def test_normalize_product_watch_ids_resolves_issue_ids_to_deduped_containers():
@@ -562,6 +604,9 @@ def test_available_media_reserves_when_lend_fails_because_unavailable():
             self.reserved = True
             return {}
 
+        def maintenance_active(self):
+            return False
+
     client = Client()
     handled_ids: set[str] = set()
     message, download_path = maybe_lend_or_reserve(
@@ -580,6 +625,64 @@ def test_available_media_reserves_when_lend_fails_because_unavailable():
     assert download_path is None
 
 
+def test_available_media_does_not_reserve_during_maintenance():
+    class Client:
+        reserved = False
+
+        def lend(self, product_id: str):
+            raise OnleiheAPIError(
+                "lend failed",
+                status_code=409,
+                payload={"messageId": "no-available-licences"},
+            )
+
+        def maintenance_active(self):
+            return True
+
+        def reserve(self, product_id: str):
+            self.reserved = True
+
+    client = Client()
+
+    with pytest.raises(cli.MaintenanceDetectedError):
+        maybe_lend_or_reserve(
+            watched_media(product_id="book-1", available=True),
+            client,  # type: ignore[arg-type]
+            config=None,  # type: ignore[arg-type]
+            gourou_client=None,
+            rented_media_ids=set(),
+            downloaded_media_ids=set(),
+        )
+
+    assert client.reserved is False
+
+
+def test_any_lend_api_error_checks_maintenance():
+    class Client:
+        maintenance_checks = 0
+
+        def lend(self, product_id: str):
+            raise OnleiheAPIError("service unavailable", status_code=503)
+
+        def maintenance_active(self):
+            self.maintenance_checks += 1
+            return True
+
+    client = Client()
+
+    with pytest.raises(cli.MaintenanceDetectedError):
+        maybe_lend_or_reserve(
+            watched_media(product_id="book-1", available=True),
+            client,  # type: ignore[arg-type]
+            config=None,  # type: ignore[arg-type]
+            gourou_client=None,
+            rented_media_ids=set(),
+            downloaded_media_ids=set(),
+        )
+
+    assert client.maintenance_checks == 1
+
+
 def test_available_media_does_not_reserve_after_auth_lend_error():
     class Client:
         reserved = False
@@ -589,6 +692,9 @@ def test_available_media_does_not_reserve_after_auth_lend_error():
 
         def reserve(self, product_id: str):
             self.reserved = True
+
+        def maintenance_active(self):
+            return False
 
     client = Client()
 

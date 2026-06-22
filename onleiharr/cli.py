@@ -67,6 +67,10 @@ class CategoryWatchResult:
     total: int
 
 
+class MaintenanceDetectedError(OnleiheAPIError):
+    """Raised when an operation fails while Onleihe maintenance is active."""
+
+
 def load_version() -> str:
     try:
         from importlib.metadata import version as metadata_version
@@ -418,6 +422,8 @@ def normalize_product_watch_ids(client: OnleiheClient, product_ids: list[str]) -
                 exc,
             )
             continue
+        except OnleiheAPIError:
+            raise
         except Exception as exc:
             logger.exception(
                 "Failed to resolve product watch %s during startup; keeping original id: %s",
@@ -470,7 +476,13 @@ def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[Wa
             items = []
             for container_id in container_ids:
                 container = client.get_product(container_id, include_user_context=False)
-                items.extend(container.included_media or [container])
+                container_items = container.included_media
+                if not container_items and product_is_container(container):
+                    raise OnleiheAPIError(
+                        f"Product watch {product_id} resolved to container {container_id}, "
+                        "but its product details contained no included media"
+                    )
+                items.extend(container_items or [container])
             logger.debug(
                 "Resolved product watch %s through %d container ids to %d media items",
                 product_id,
@@ -478,11 +490,15 @@ def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[Wa
                 len(items),
             )
     if not items:
-        if not product_is_container(product):
-            logger.warning(
-                "Product watch %s is a single product without container ids; only this medium will be watched.",
-                product_id,
+        if product_is_container(product):
+            raise OnleiheAPIError(
+                f"Product watch {product_id} is a container, but its product details "
+                "contained no included media"
             )
+        logger.warning(
+            "Product watch %s is a single product without container ids; only this medium will be watched.",
+            product_id,
+        )
         items = [product]
     media: list[WatchedMedia] = []
     for item in items:
@@ -737,6 +753,10 @@ def maybe_lend_or_reserve(
         try:
             lend_result = client.lend(media.product_id)
         except OnleiheAPIError as exc:
+            if is_maintenance_active(client):
+                raise MaintenanceDetectedError(
+                    f"Auto lend failed for {media.product_id} while Onleihe maintenance is active"
+                ) from exc
             if not lend_failure_allows_reserve(exc):
                 raise
             logger.warning(
@@ -909,6 +929,15 @@ def initialize_onleihe_session(
                     downloaded_media_ids,
                     seed_only=True,
                 )
+            except OnleiheAPIError as exc:
+                seeded = 0
+                if suspend_if_maintenance_active(
+                    client,
+                    config.general.poll_interval_secs,
+                    failed_operation="Initial my-media scan",
+                ):
+                    continue
+                logger.exception("Failed to prime my-media cache; will retry later: %s", exc)
             except Exception as exc:
                 seeded = 0
                 logger.exception("Failed to prime my-media cache; will retry later: %s", exc)
@@ -998,6 +1027,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 else:
                     logger.debug("No new media found this cycle")
 
+                processed_media_ids: set[str] = set()
                 for product_id in new_media_ids:
                     media = current_media_by_id[product_id]
                     try:
@@ -1015,12 +1045,31 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                             attachments=[download_path] if download_path else None,
                             image_urls=media_image_urls(media),
                         )
-                    except (OnleiheAPIError, OnleiheAuthError) as exc:
+                    except MaintenanceDetectedError:
+                        logger.warning(
+                            "Auto lend for '%s' failed during Onleihe maintenance; "
+                            "leaving it new for a retry after maintenance.",
+                            media.title,
+                        )
+                        wait_for_maintenance_end(
+                            client,
+                            config.general.poll_interval_secs,
+                            already_active=True,
+                        )
+                        break
+                    except OnleiheAPIError as exc:
+                        if suspend_if_maintenance_active(
+                            client,
+                            config.general.poll_interval_secs,
+                            failed_operation=f"Handling media '{media.title}'",
+                        ):
+                            break
                         logger.exception("Onleihe API error handling media '%s': %s", media.title, exc)
                     except Exception as exc:
                         logger.exception("Error handling media '%s': %s", media.title, exc)
+                    processed_media_ids.add(product_id)
 
-                known_media_ids.update(new_media_ids)
+                known_media_ids.update(processed_media_ids)
 
             if lendings_enabled and lendings_next_check_ts is not None and time.monotonic() >= lendings_next_check_ts:
                 try:
@@ -1033,6 +1082,13 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         seed_only=False,
                     )
                     logger.debug("My-media scan handled %d items.", count)
+                except OnleiheAPIError as exc:
+                    if not suspend_if_maintenance_active(
+                        client,
+                        config.general.poll_interval_secs,
+                        failed_operation="My-media scan",
+                    ):
+                        logger.exception("My-media scan failed; will retry later: %s", exc)
                 except Exception as exc:
                     logger.exception("My-media scan failed; will retry later: %s", exc)
                 lendings_next_check_ts = time.monotonic() + lendings_interval_secs
