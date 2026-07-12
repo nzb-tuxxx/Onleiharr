@@ -1,3 +1,4 @@
 apprise
 httpx>=0.25
 tomli; python_version < '3.11'
+# Optional for managed-browser OPEN_ID login: playwright>=1.50

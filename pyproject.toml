@@ -16,6 +16,7 @@ dependencies = [
   "httpx>=0.25",
   "tomli; python_version < '3.11'",
 ]
+
 keywords = ["onleiharr", "onleihe"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -28,6 +29,9 @@ classifiers = [
   "Intended Audience :: End Users/Desktop",
   "Environment :: Console",
 ]
+
+[project.optional-dependencies]
+external-auth = ["playwright>=1.50"]
 
 [project.urls]
 Homepage = "https://github.com/nzb-tuxxx/Onleiharr"

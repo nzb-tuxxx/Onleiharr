@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import stat
 
+import onleiharr.wizard as wizard
+from onleiharr._vendor.onleihe import Library
 from onleiharr.config import load_config
-from onleiharr.wizard import WizardConfig, build_config_text, extract_product_id, normalize_host, write_config_atomic
+from onleiharr.wizard import (
+    FirstStartWizard,
+    WizardConfig,
+    build_config_text,
+    extract_product_id,
+    normalize_host,
+    write_config_atomic,
+)
 
 
 def test_extract_product_id_accepts_ids_and_urls():
@@ -75,3 +84,51 @@ def test_normalize_host_accepts_urls_and_hosts():
     assert normalize_host("niedersachsen.onleihe.de") == "niedersachsen.onleihe.de"
     assert normalize_host("https://niedersachsen.onleihe.de/search") == "niedersachsen.onleihe.de"
     assert normalize_host("HTTP://NIEDERSACHSEN.ONLEIHE.DE/") == "niedersachsen.onleihe.de"
+
+
+def test_curses_library_selection_loads_host_libraries_before_typing(tmp_path, monkeypatch):
+    munich = Library(
+        id="696652cb9d468a92eb935dd8",
+        onleihe_id="696652cb9d468a92eb935dd7",
+        name="Münchner Stadtbibliothek",
+        city="München",
+    )
+
+    class Client:
+        def __init__(self, *, host):
+            assert host == "muenchen.onleihe.de"
+
+        def resolve_onleihe_id(self):
+            return munich.onleihe_id
+
+        def list_libraries(self, *, search_value, page, size):
+            assert search_value is None
+            return type("Page", (), {"libraries": [munich]})()
+
+    class Screen:
+        def __init__(self):
+            self.lines = []
+
+        def clear(self):
+            pass
+
+        def addstr(self, row, column, text):
+            self.lines.append(text)
+
+        def refresh(self):
+            pass
+
+        def getch(self):
+            return 10
+
+    monkeypatch.setattr(wizard, "OnleiheClient", Client)
+    monkeypatch.setattr(wizard.curses, "COLS", 120, raising=False)
+    monkeypatch.setattr(wizard.curses, "LINES", 30, raising=False)
+    screen = Screen()
+
+    selected = FirstStartWizard(tmp_path / "config.toml", version="test")._curses_select_library(
+        screen, "muenchen.onleihe.de"
+    )
+
+    assert selected == munich
+    assert any("Münchner Stadtbibliothek" in line for line in screen.lines)

@@ -101,6 +101,26 @@ password = "secret"
     assert config.general.watch_categories == []
 
 
+def test_load_config_accepts_external_auth_without_username_or_password(tmp_path: Path):
+    body = """
+[general]
+watch_product_ids = []
+[notification]
+urls = []
+[credentials]
+host = "muenchen.onleihe.de"
+onleihe_id = "onleihe-id"
+library_id = "library-id"
+auth_type = "open_id"
+session_path = "private/session.json"
+"""
+    config = load_config(write_config(tmp_path, body), env={})
+    assert config.credentials.auth_type == "open_id"
+    assert config.credentials.username is None
+    assert config.credentials.password is None
+    assert config.credentials.session_path == tmp_path / "private/session.json"
+
+
 def test_load_config_accepts_id_credentials_and_env_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ONLEIHARR_USERNAME", "env-user")
     monkeypatch.setenv("ONLEIHARR_PASSWORD", "env-secret")

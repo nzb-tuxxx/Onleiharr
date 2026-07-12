@@ -363,6 +363,24 @@ def test_notify_preserves_file_attachment_for_general_attachment_target(tmp_path
     ]
 
 
+def test_external_auth_notification_contains_renewal_commands(tmp_path):
+    class Apprise:
+        def __init__(self):
+            self.calls = []
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+
+    apobj = Apprise()
+    config = SimpleNamespace(config_path=tmp_path / "onleiharr.toml")
+
+    cli.notify_external_auth_required(apobj, config)  # type: ignore[arg-type]
+
+    assert apobj.calls[0]["title"] == "Onleiharr: Anmeldung erneuern"
+    assert f"onleiharr --login -c {tmp_path / 'onleiharr.toml'}" in apobj.calls[0]["body"]
+    assert "systemctl --user restart onleiharr" in apobj.calls[0]["body"]
+
+
 def test_notify_uses_cover_for_general_target_when_no_file_attachment():
     class Server:
         attachment_support = True

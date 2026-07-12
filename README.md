@@ -50,6 +50,19 @@ From source:
 Manual config setup:
 - Start the wizard explicitly: `onleiharr --init-config`
 - Disable the wizard for scripts/services: `onleiharr --no-wizard`
+- Renew an external-library login: `onleiharr --login`
+
+### External library login (OpenID)
+Libraries such as Münchner Stadtbibliothek redirect authentication to their own identity provider. The wizard detects this through the Onleihe v3 API and prints an authorization URL. Open that URL on a local workstation, disable JavaScript for the login tab so the Onleihe web app cannot consume the one-time code, then paste the complete redirected URL into the SSH terminal. Onleiharr stores only the resulting Onleihe session in a private `session.json`; the library credentials are not written to the config.
+
+No browser is required on the Onleiharr server. As an optional convenience on desktop installations, `onleiharr --login --login-browser` can manage a local Chromium/Chrome window:
+
+```sh
+pipx inject onleiharr playwright
+# Arch Linux: sudo pacman -S chromium
+```
+
+The watcher refreshes the cached Onleihe session automatically and atomically persists every renewed token. If the session can no longer be refreshed, Onleiharr sends an Apprise notification containing the exact `onleiharr --login -c ...` and systemd restart commands, then exits with an authentication error.
 
 Default config path:
 - Linux: `~/.config/onleiharr/onleiharr.toml`
@@ -106,6 +119,8 @@ download_permissions = "0644"
 # lendings_notify = true
 ```
 
+For an external-login library, the wizard writes `auth_type = "open_id"` and `session_path = "session.json"` instead of `username` and `password`.
+
 Behavior:
 - `watch_product_ids` are direct product or series watches and do not use keyword filtering.
 - `watch_categories` combine `category_ids` and IDs extracted from `category_urls`, then search newest media first with a fixed page size of 50.
@@ -119,6 +134,7 @@ Environment overrides:
 - `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_HOST`
 - `ONLEIHARR_ONLEIHE_NAME`, `ONLEIHARR_ONLEIHE_ID`
 - `ONLEIHARR_LIBRARY_NAME`, `ONLEIHARR_LIBRARY_ID`
+- `ONLEIHARR_AUTH_TYPE`, `ONLEIHARR_SESSION_PATH`
 - `ONLEIHARR_WATCH_PRODUCT_IDS`
 - `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`
 - `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`

@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from onleiharr._vendor.onleihe import Library, OnleiheAPIError, OnleiheAuthError, OnleiheClient
+from onleiharr._vendor.onleihe import (
+    Library,
+    OnleiheAPIError,
+    OnleiheAuthError,
+    OnleiheClient,
+    SessionState,
+)
+from onleiharr.auth import default_session_path, external_login_manual, save_session
 from onleiharr.config import ensure_default_config
 
 try:
@@ -41,6 +48,8 @@ class WizardConfig:
     library_name: str
     username: str
     password: str
+    auth_type: str = "upa"
+    session_path: str | None = None
     onleihe_id: str | None = None
     library_id: str | None = None
     watch_product_ids: list[str] = field(default_factory=list)
@@ -148,10 +157,13 @@ def build_config_text(config: WizardConfig) -> str:
         lines.append(f"onleihe_id = {_toml_string(config.onleihe_id)}")
     if config.library_id:
         lines.append(f"library_id = {_toml_string(config.library_id)}")
+    lines.append(f"auth_type = {_toml_string(config.auth_type)}")
+    if config.session_path:
+        lines.append(f"session_path = {_toml_string(config.session_path)}")
+    if config.auth_type == "upa":
+        lines.extend([f"username = {_toml_string(config.username)}", f"password = {_toml_string(config.password)}"])
     lines.extend(
         [
-            f"username = {_toml_string(config.username)}",
-            f"password = {_toml_string(config.password)}",
             "",
             "[gourou]",
             "# bin_dir = \"~/bin\"",
@@ -221,6 +233,22 @@ class FirstStartWizard:
                     state["onleihe_name"] = self._resolve_onleihe_name(library)
                     step = 3
                 elif step == 3:
+                    library = state["library"]
+                    assert isinstance(library, Library)
+                    if self._login_type(str(state["host"]), library) == "OPEN_ID":
+                        summary, session = self._validate_external_login(
+                            str(state["host"]), library, str(state["onleihe_name"])
+                        )
+                        state.update(
+                            username="",
+                            password="",
+                            auth_type="open_id",
+                            external_session=session,
+                            summary=summary,
+                        )
+                        self._print_login_summary(summary)
+                        step = 4
+                        continue
                     username = _prompt("Username", back=True)
                     password = getpass.getpass("Password (type :back to return): ")
                     if password.strip() == ":back":
@@ -239,6 +267,7 @@ class FirstStartWizard:
                         continue
                     state["username"] = username
                     state["password"] = password
+                    state["auth_type"] = "upa"
                     state["summary"] = summary
                     self._print_login_summary(summary)
                     step = 4
@@ -272,6 +301,8 @@ class FirstStartWizard:
                     if not _prompt_bool(f"Write config to {self.path}?", default=True, back=True):
                         return False
                     write_config_atomic(self.path, config)
+                    if state.get("external_session") is not None:
+                        save_session(default_session_path(self.path), state["external_session"])  # type: ignore[arg-type]
                     self._print_next_steps()
                     return True
             except WizardBack:
@@ -302,6 +333,24 @@ class FirstStartWizard:
                     state["onleihe_name"] = self._resolve_onleihe_name(library)
                     step = 3
                 elif step == 3:
+                    library = state["library"]
+                    assert isinstance(library, Library)
+                    if self._login_type(str(state["host"]), library) == "OPEN_ID":
+                        curses.endwin()
+                        summary, session = self._validate_external_login(
+                            str(state["host"]), library, str(state["onleihe_name"])
+                        )
+                        screen.refresh()
+                        state.update(
+                            username="",
+                            password="",
+                            auth_type="open_id",
+                            external_session=session,
+                            summary=summary,
+                        )
+                        self._curses_login_summary(screen, summary)
+                        step = 4
+                        continue
                     username = self._curses_input(screen, "Username")
                     password = self._curses_input(screen, "Password", secret=True)
                     try:
@@ -317,6 +366,7 @@ class FirstStartWizard:
                         continue
                     state["username"] = username
                     state["password"] = password
+                    state["auth_type"] = "upa"
                     state["summary"] = summary
                     self._curses_login_summary(screen, summary)
                     step = 4
@@ -360,6 +410,8 @@ class FirstStartWizard:
                     if not self._curses_confirm(screen, self._summary_text(config), default=True):
                         return False
                     write_config_atomic(self.path, config)
+                    if state.get("external_session") is not None:
+                        save_session(default_session_path(self.path), state["external_session"])  # type: ignore[arg-type]
                     self._curses_page(screen, self._next_steps_lines())
                     return True
             except WizardBack:
@@ -430,7 +482,7 @@ class FirstStartWizard:
         onleihe_name: str,
         username: str,
         password: str,
-    ) -> AccountSummary:
+    ) -> tuple[AccountSummary, SessionState]:
         with OnleiheClient(
             host=host,
             onleihe_id=library.onleihe_id,
@@ -449,6 +501,35 @@ class FirstStartWizard:
             reservation_max=account.reservation_max,
             my_media_count=len(my_media),
         )
+
+    def _login_type(self, host: str, library: Library) -> str:
+        with OnleiheClient(host=host, onleihe_id=library.onleihe_id, library_id=library.id) as client:
+            return str(client.get_login_method().get("loginType") or "UPA")
+
+    def _validate_external_login(
+        self, host: str, library: Library, onleihe_name: str
+    ) -> AccountSummary:
+        with OnleiheClient(
+            host=host,
+            onleihe_id=library.onleihe_id,
+            onleihe_name=onleihe_name,
+            library_id=library.id,
+            library_name=library.name,
+        ) as client:
+            session = external_login_manual(client)
+            account = client.get_account()
+            my_media = client.get_my_media_items(include_player_licences=False)
+            return (
+                AccountSummary(
+                    user_id=session.user_id,
+                    lend_current=account.lend_current,
+                    lend_max=account.lend_max,
+                    reservation_current=account.reservation_current,
+                    reservation_max=account.reservation_max,
+                    my_media_count=len(my_media),
+                ),
+                session,
+            )
 
     def _print_login_summary(self, summary: AccountSummary) -> None:
         print()
@@ -520,8 +601,7 @@ class FirstStartWizard:
                 f"Host: {config.host}",
                 f"Onleihe: {config.onleihe_name}",
                 f"Library: {config.library_name}",
-                f"Username: {config.username}",
-                "Password: ********",
+                f"Authentication: {config.auth_type}",
                 f"Product watches: {len(config.watch_product_ids)}",
                 f"Category watches: {len(config.watch_categories)}",
                 f"Poll interval: {config.poll_interval_secs:.1f}s",
@@ -543,6 +623,8 @@ class FirstStartWizard:
             onleihe_id=library.onleihe_id,
             username=str(state["username"]),
             password=str(state["password"]),
+            auth_type=str(state.get("auth_type", "upa")),
+            session_path="session.json" if state.get("auth_type") == "open_id" else None,
             watch_product_ids=list(state.get("product_ids", [])),  # type: ignore[arg-type]
             watch_categories=list(state.get("category_watches", [])),  # type: ignore[arg-type]
             poll_interval_secs=float(state.get("poll_interval", 300.0)),
@@ -663,15 +745,24 @@ class FirstStartWizard:
         except Exception:
             pass
         query = ""
+        loaded_query: str | None = None
         selected = 0
         libraries: list[Library] = []
+        search_error: str | None = None
         while True:
-            if query:
+            if query != loaded_query:
                 try:
-                    libraries = client.list_libraries(search_value=query, page=1, size=8).libraries
+                    libraries = client.list_libraries(
+                        search_value=query or None,
+                        page=1,
+                        size=8,
+                    ).libraries
                     selected = min(selected, max(len(libraries) - 1, 0))
-                except Exception:
+                    search_error = None
+                except OnleiheAPIError as exc:
                     libraries = []
+                    search_error = str(exc)
+                loaded_query = query
             screen.clear()
             screen.addstr(1, 2, "Search library")
             screen.addstr(3, 2, f"> {query}")
@@ -679,6 +770,10 @@ class FirstStartWizard:
                 marker = ">" if idx == selected else " "
                 city = f" ({library.city})" if library.city else ""
                 screen.addstr(5 + idx, 2, f"{marker} {library.name}{city}"[: curses.COLS - 4])
+            if search_error:
+                screen.addstr(5, 2, f"Search failed: {search_error}"[: curses.COLS - 4])
+            elif not libraries:
+                screen.addstr(5, 2, "No libraries found."[: curses.COLS - 4])
             screen.addstr(curses.LINES - 2, 2, "Type to search, arrows select, Enter accepts, Esc goes back.")
             screen.refresh()
             key = screen.getch()

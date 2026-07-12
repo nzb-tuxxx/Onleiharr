@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlencode
 
 import httpx
 
@@ -58,6 +59,7 @@ class OnleiheClient:
         timeout: float = 20.0,
         category_elements_cache_ttl_secs: float = DEFAULT_CATEGORY_ELEMENTS_CACHE_TTL_SECS,
         client: httpx.Client | None = None,
+        session_callback: Callable[[SessionState], None] | None = None,
     ) -> None:
         self.host = host
         self.onleihe_id = onleihe_id
@@ -68,6 +70,7 @@ class OnleiheClient:
         self.session = SessionState(onleihe_id=onleihe_id, library_id=library_id)
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout, follow_redirects=True)
+        self._session_callback = session_callback
         self._category_elements_cache_ttl_secs = category_elements_cache_ttl_secs
         self._category_elements_cache: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
         self._base_headers = {
@@ -186,6 +189,45 @@ class OnleiheClient:
             auth=False,
         )
 
+    def build_open_id_authorization_url(
+        self, login_method: dict[str, Any], *, redirect_url: str, state: str
+    ) -> str:
+        endpoint = login_method.get("authorizationEndpoint")
+        if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+            raise OnleiheAuthError("OpenID login method has no valid authorization endpoint")
+        params = {
+            key: value
+            for key, value in {
+                **(login_method.get("standardParams") or {}),
+                **(login_method.get("additionalParams") or {}),
+                "redirect_uri": redirect_url,
+                "state": state,
+            }.items()
+            if value is not None
+        }
+        return f"{endpoint}?{urlencode(params)}"
+
+    def login_open_id(
+        self,
+        code: str,
+        *,
+        redirect_url: str,
+        library_id: str | None = None,
+        onleihe_id: str | None = None,
+    ) -> SessionState:
+        payload = {
+            "libraryId": library_id or self._library_id(),
+            "onleiheId": onleihe_id or self._onleihe_id(),
+            "openIdCode": code,
+            "openIdRedirectURL": redirect_url,
+        }
+        data = self._post("/user-application/v1/auth/login", json=payload, auth=False)
+        self.session = parse_session(data)
+        self.onleihe_id = self.session.onleihe_id or payload["onleiheId"]
+        self.library_id = self.session.library_id or payload["libraryId"]
+        self._notify_session_changed()
+        return self.session
+
     def login(
         self,
         username: str | None = None,
@@ -219,6 +261,7 @@ class OnleiheClient:
         self.session = parse_session(data, username=username)
         self.onleihe_id = self.session.onleihe_id or payload["onleiheId"]
         self.library_id = self.session.library_id or self.library_id
+        self._notify_session_changed()
         return self.session
 
     def refresh(self) -> SessionState:
@@ -235,7 +278,12 @@ class OnleiheClient:
         self.session.onleihe_id = self.session.onleihe_id or previous.onleihe_id
         self.onleihe_id = self.session.onleihe_id or self.onleihe_id
         self.library_id = self.session.library_id or self.library_id
+        self._notify_session_changed()
         return self.session
+
+    def _notify_session_changed(self) -> None:
+        if self._session_callback is not None:
+            self._session_callback(self.session)
 
     def logout(self) -> None:
         if self.session.refresh_token:

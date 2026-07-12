@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,13 @@ from onleiharr._vendor.onleihe import (
     OnleiheClient,
     OnleiheNotFoundError,
     ProductDetails,
+)
+from onleiharr.auth import (
+    default_session_path,
+    external_login_browser,
+    external_login_manual,
+    load_session,
+    save_session,
 )
 from onleiharr.config import (
     AppConfig,
@@ -148,6 +157,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Logging verbosity",
     )
     parser.add_argument("--once", action="store_true", help="Run a single poll iteration and exit")
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        dest="external_login",
+        help="Authorize an external-library login and update its local session",
+    )
+    parser.add_argument(
+        "--login-browser",
+        action="store_true",
+        help="Use a managed local browser for --login instead of the SSH-friendly manual flow",
+    )
     parser.add_argument("--interval", type=float, dest="interval", help="Override poll interval in seconds")
     parser.add_argument(
         "--test-notification",
@@ -282,6 +302,8 @@ def notify(
     message: str,
     attachments: Iterable[Path | str] | None = None,
     image_urls: Iterable[str] | None = None,
+    *,
+    title: str = "Onleihe: New media",
 ) -> None:
     if apobj is None:
         logger.warning("Notification skipped because no Apprise targets are configured: %s", message)
@@ -299,7 +321,7 @@ def notify(
                 file_attachments.append(str(attachment))
 
     if not file_attachments and not image_attachments:
-        apobj.notify(title="Onleihe: New media", body=message)
+        apobj.notify(title=title, body=message)
         return
 
     notified = False
@@ -307,11 +329,11 @@ def notify(
     for target in apobj.find():
         target_attachments = attachment_for_target(target, file_attachments, image_attachments)
         if target_attachments:
-            target.notify(title="Onleihe: New media", body=message, attach=target_attachments)
+            target.notify(title=title, body=message, attach=target_attachments)
             notified = True
             continue
         unsupported_targets += 1
-        target.notify(title="Onleihe: New media", body=message)
+        target.notify(title=title, body=message)
         notified = True
     if unsupported_targets:
         logger.warning("Some Apprise targets do not support usable attachments; sent text-only notification to them.")
@@ -319,17 +341,44 @@ def notify(
         logger.warning("No Apprise targets available for notification: %s", message)
 
 
+def notify_external_auth_required(
+    apobj: apprise.Apprise | None, config: AppConfig
+) -> None:
+    login_command = f"onleiharr --login -c {shlex.quote(str(config.config_path))}"
+    restart_command = "systemctl --user restart onleiharr"
+    message = (
+        "<b>Die externe Onleihe-Anmeldung ist abgelaufen.</b><br>"
+        "Session per SSH erneuern:<br>"
+        f"<code>{html.escape(login_command)}</code><br>"
+        "Danach den Dienst neu starten:<br>"
+        f"<code>{html.escape(restart_command)}</code>"
+    )
+    notify(apobj, message, title="Onleiharr: Anmeldung erneuern")
+
+
 def create_onleihe_client(config: AppConfig) -> OnleiheClient:
+    session_callback = None
+    if config.credentials.auth_type == "open_id":
+        session_path = config.credentials.session_path or default_session_path(config.config_path)
+        session_callback = lambda session: save_session(session_path, session)
     return OnleiheClient(
         host=config.credentials.host,
         onleihe_id=config.credentials.onleihe_id,
         onleihe_name=config.credentials.onleihe_name,
         library_id=config.credentials.library_id,
         library_name=config.credentials.library_name,
+        session_callback=session_callback,
     )
 
 
 def login(client: OnleiheClient, config: AppConfig) -> None:
+    if config.credentials.auth_type == "open_id":
+        session_path = config.credentials.session_path or default_session_path(config.config_path)
+        client.session = load_session(session_path)
+        client.onleihe_id = client.session.onleihe_id or client.onleihe_id
+        client.library_id = client.session.library_id or client.library_id
+        client.refresh()
+        return
     client.login(
         config.credentials.username,
         config.credentials.password,
@@ -601,6 +650,8 @@ def fetch_all_watched_media(
         except OnleiheNotFoundError as exc:
             errors += 1
             logger.error("Product watch %s no longer exists; skipping this poll: %s", product_id, exc)
+        except OnleiheAuthError:
+            raise
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
@@ -623,6 +674,8 @@ def fetch_all_watched_media(
                     watch,
                 )
             media.extend(category_result.media)
+        except OnleiheAuthError:
+            raise
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch category watch %s: %s", watch.description or watch.category_ids, exc)
@@ -1057,6 +1110,8 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                             already_active=True,
                         )
                         break
+                    except OnleiheAuthError:
+                        raise
                     except OnleiheAPIError as exc:
                         if suspend_if_maintenance_active(
                             client,
@@ -1082,6 +1137,8 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         seed_only=False,
                     )
                     logger.debug("My-media scan handled %d items.", count)
+                except OnleiheAuthError:
+                    raise
                 except OnleiheAPIError as exc:
                     if not suspend_if_maintenance_active(
                         client,
@@ -1098,6 +1155,10 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 break
 
             time.sleep(config.general.poll_interval_secs)
+    except OnleiheAuthError:
+        if config.credentials.auth_type == "open_id":
+            notify_external_auth_required(apobj, config)
+        raise
     finally:
         client.close()
 
@@ -1158,6 +1219,26 @@ def main(argv: list[str] | None = None) -> int:
         config.general.poll_interval_secs = args.interval
     if args.test_notification:
         config.notification.test_notification = True
+
+    if args.external_login:
+        if config.credentials.auth_type != "open_id":
+            logger.error("--login requires credentials.auth_type = 'open_id'.")
+            return 1
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            logger.error("--login requires an interactive terminal.")
+            return 1
+        with create_onleihe_client(config) as client:
+            login_flow = external_login_browser if args.login_browser else external_login_manual
+            session = login_flow(client)
+            session_path = config.credentials.session_path or default_session_path(config.config_path)
+            save_session(session_path, session)
+            if session.expires_at:
+                logger.info(
+                    "Onleihe access token expires in approximately %d minutes; refresh is automatic.",
+                    max(0, (session.expires_at - int(time.time())) // 60),
+                )
+        logger.info("External Onleihe login stored in %s.", session_path)
+        return 0
 
     logger.info(
         "Loaded config from %s with %d product watches and %d category watches.",

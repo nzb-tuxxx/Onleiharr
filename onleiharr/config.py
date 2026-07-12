@@ -22,13 +22,15 @@ DEFAULT_FILENAME = "onleiharr.toml"
 
 @dataclass
 class Credentials:
-    username: str
-    password: str
+    username: str | None
+    password: str | None
     host: str
     onleihe_name: str | None
     library_name: str | None
     onleihe_id: str | None
     library_id: str | None
+    auth_type: str = "upa"
+    session_path: Path | None = None
 
 
 @dataclass
@@ -96,6 +98,8 @@ SECTION_KEYS = {
         "library_name",
         "onleihe_id",
         "library_id",
+        "auth_type",
+        "session_path",
     },
     "gourou": {
         "bin_dir",
@@ -191,6 +195,8 @@ onleihe_name = "Onleihe Niedersachsen"
 library_name = "Stadtbibliothek Achim"
 # onleihe_id = ""
 # library_id = ""
+auth_type = "upa" # upa or open_id
+# session_path = "~/.config/onleiharr/session.json"
 username = "your-username"
 password = "your-password"
 """
@@ -231,7 +237,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         else bool(notification_section.get("test_notification", False))
     )
 
-    credentials = _load_credentials(credentials_section, environ)
+    credentials = _load_credentials(credentials_section, environ, base=path.parent)
     gourou = _load_gourou(gourou_section, environ, base=path.parent)
 
     return AppConfig(
@@ -252,7 +258,9 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
     )
 
 
-def _load_credentials(section: dict[str, Any], environ: os._Environ[str]) -> Credentials:
+def _load_credentials(
+    section: dict[str, Any], environ: os._Environ[str], *, base: Path
+) -> Credentials:
     username = environ.get("ONLEIHARR_USERNAME") or section.get("username")
     password = environ.get("ONLEIHARR_PASSWORD") or section.get("password")
     host = environ.get("ONLEIHARR_HOST") or section.get("host")
@@ -260,22 +268,30 @@ def _load_credentials(section: dict[str, Any], environ: os._Environ[str]) -> Cre
     library_name = environ.get("ONLEIHARR_LIBRARY_NAME") or section.get("library_name")
     onleihe_id = environ.get("ONLEIHARR_ONLEIHE_ID") or section.get("onleihe_id")
     library_id = environ.get("ONLEIHARR_LIBRARY_ID") or section.get("library_id")
+    auth_type = str(environ.get("ONLEIHARR_AUTH_TYPE") or section.get("auth_type") or "upa").casefold()
+    session_value = environ.get("ONLEIHARR_SESSION_PATH") or section.get("session_path")
 
-    if not username or not password or not host:
-        raise ConfigError("Credentials incomplete. Set username/password/host.")
+    if auth_type not in {"upa", "open_id"}:
+        raise ConfigError("credentials.auth_type must be 'upa' or 'open_id'.")
+    if not host:
+        raise ConfigError("Credentials incomplete. Set host.")
+    if auth_type == "upa" and (not username or not password):
+        raise ConfigError("UPA credentials incomplete. Set username/password.")
     if not (onleihe_id or onleihe_name):
         raise ConfigError("Credentials incomplete. Set onleihe_name or onleihe_id.")
     if not (library_id or library_name):
         raise ConfigError("Credentials incomplete. Set library_name or library_id.")
 
     return Credentials(
-        username=str(username),
-        password=str(password),
+        username=str(username) if username else None,
+        password=str(password) if password else None,
         host=str(host),
         onleihe_name=_optional_str(onleihe_name),
         library_name=_optional_str(library_name),
         onleihe_id=_optional_str(onleihe_id),
         library_id=_optional_str(library_id),
+        auth_type=auth_type,
+        session_path=_resolve_optional_path_value(str(session_value), base=base) if session_value else None,
     )
 
 

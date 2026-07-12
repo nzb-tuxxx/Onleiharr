@@ -71,6 +71,44 @@ def test_parse_session_accepts_refresh_token_response_shape():
     assert session.username == "user"
 
 
+def test_build_open_id_authorization_url_uses_discovered_provider_parameters():
+    client = OnleiheClient(host="muenchen.onleihe.de")
+    url = client.build_open_id_authorization_url(
+        {
+            "authorizationEndpoint": "https://ssl.muenchen.de/oidcp/authorize",
+            "standardParams": {"client_id": "onleihe001", "response_type": "code"},
+            "additionalParams": {"unused": None},
+        },
+        redirect_url="https://muenchen.onleihe.de",
+        state="expected-state",
+    )
+    assert url.startswith("https://ssl.muenchen.de/oidcp/authorize?")
+    assert "client_id=onleihe001" in url
+    assert "redirect_uri=https%3A%2F%2Fmuenchen.onleihe.de" in url
+    assert "state=expected-state" in url
+    assert "unused" not in url
+
+
+def test_login_open_id_exchanges_code_with_onleihe_api():
+    client = OnleiheClient(host="muenchen.onleihe.de", onleihe_id="onleihe-id", library_id="library-id")
+
+    def fake_post(path, *, params=None, json=None, auth=True):
+        assert path == "/user-application/v1/auth/login"
+        assert json == {
+            "libraryId": "library-id",
+            "onleiheId": "onleihe-id",
+            "openIdCode": "one-time-code",
+            "openIdRedirectURL": "https://muenchen.onleihe.de",
+        }
+        assert auth is False
+        return {"accessToken": "access", "refreshToken": "refresh"}
+
+    client._post = fake_post  # type: ignore[method-assign]
+    session = client.login_open_id("one-time-code", redirect_url="https://muenchen.onleihe.de")
+    assert session.access_token == "access"
+    assert session.refresh_token == "refresh"
+
+
 def test_parse_job_status_keeps_api_error():
     job = parse_job_status(
         {
@@ -88,7 +126,13 @@ def test_parse_job_status_keeps_api_error():
 
 
 def test_refresh_preserves_existing_session_context():
-    client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
+    persisted = []
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        library_id="library-id",
+        session_callback=persisted.append,
+    )
     client.session = SessionState(
         access_token="old-access",
         refresh_token="old-refresh",
@@ -113,6 +157,7 @@ def test_refresh_preserves_existing_session_context():
     assert session.refresh_token == "old-refresh"
     assert session.user_id == "user-id"
     assert session.library_id == "library-id"
+    assert persisted == [session]
 
 
 def test_lend_raises_api_error_when_lend_job_fails():
