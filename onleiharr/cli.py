@@ -304,10 +304,10 @@ def notify(
     image_urls: Iterable[str] | None = None,
     *,
     title: str = "Onleihe: New media",
-) -> None:
+) -> bool:
     if apobj is None:
         logger.warning("Notification skipped because no Apprise targets are configured: %s", message)
-        return
+        return True
     file_attachments: list[str] = []
     image_attachments = [str(url) for url in image_urls or [] if url]
     if attachments:
@@ -321,24 +321,27 @@ def notify(
                 file_attachments.append(str(attachment))
 
     if not file_attachments and not image_attachments:
-        apobj.notify(title=title, body=message)
-        return
+        return apobj.notify(title=title, body=message) is not False
 
     notified = False
+    delivery_succeeded = True
     unsupported_targets = 0
     for target in apobj.find():
         target_attachments = attachment_for_target(target, file_attachments, image_attachments)
         if target_attachments:
-            target.notify(title=title, body=message, attach=target_attachments)
+            result = target.notify(title=title, body=message, attach=target_attachments)
             notified = True
+            delivery_succeeded = delivery_succeeded and result is not False
             continue
         unsupported_targets += 1
-        target.notify(title=title, body=message)
+        result = target.notify(title=title, body=message)
         notified = True
+        delivery_succeeded = delivery_succeeded and result is not False
     if unsupported_targets:
         logger.warning("Some Apprise targets do not support usable attachments; sent text-only notification to them.")
     if not notified:
         logger.warning("No Apprise targets available for notification: %s", message)
+    return notified and delivery_succeeded
 
 
 def notify_external_auth_required(
@@ -1092,12 +1095,19 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                             rented_media_ids,
                             downloaded_media_ids,
                         )
-                        notify(
+                        notification_succeeded = notify(
                             apobj,
                             format_message(media, message),
                             attachments=[download_path] if download_path else None,
                             image_urls=media_image_urls(media),
                         )
+                        if not notification_succeeded:
+                            logger.error(
+                                "Notification for '%s' failed; leaving it new for a retry.",
+                                media.title,
+                            )
+                            continue
+                        processed_media_ids.add(product_id)
                     except MaintenanceDetectedError:
                         logger.warning(
                             "Auto lend for '%s' failed during Onleihe maintenance; "
@@ -1122,7 +1132,6 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         logger.exception("Onleihe API error handling media '%s': %s", media.title, exc)
                     except Exception as exc:
                         logger.exception("Error handling media '%s': %s", media.title, exc)
-                    processed_media_ids.add(product_id)
 
                 known_media_ids.update(processed_media_ids)
 

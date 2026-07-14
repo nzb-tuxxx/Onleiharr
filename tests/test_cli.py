@@ -443,6 +443,14 @@ def test_notify_omits_cover_url_when_attachments_are_unsupported():
     assert server.calls == [{"title": "Onleihe: New media", "body": "message"}]
 
 
+def test_notify_reports_failed_aggregate_delivery():
+    class Apprise:
+        def notify(self, **kwargs):
+            return False
+
+    assert notify(Apprise(), "message") is False  # type: ignore[arg-type]
+
+
 def test_category_watch_filters_by_keywords():
     client = FakeClient()
     watch = WatchCategory(
@@ -586,6 +594,146 @@ def test_run_loop_retries_startup_error_during_maintenance(monkeypatch):
     cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
 
     assert calls == [("login", None), ("sleep", 300.0), ("login", None), ("fetch", True)]
+    assert client.closed is True
+
+
+def test_run_loop_retries_transient_media_handling_error(monkeypatch):
+    class EndTestLoop(Exception):
+        pass
+
+    class Client:
+        closed = False
+
+        def maintenance_active(self):
+            return False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    existing = watched_media(product_id="existing", available=True)
+    new = watched_media(product_id="new", available=True)
+    poll_results = iter(
+        [
+            cli.WatchPollResult(media=[existing]),
+            cli.WatchPollResult(media=[existing, new]),
+            cli.WatchPollResult(media=[existing, new]),
+        ]
+    )
+    attempts = 0
+
+    def fetch_media(client, config, *, log_summary=False):
+        try:
+            return next(poll_results)
+        except StopIteration:
+            raise EndTestLoop from None
+
+    def handle_media(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OnleiheAPIError("transient failure")
+        return "handled", None
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            poll_interval_secs=1.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+    monkeypatch.setattr(cli, "maybe_lend_or_reserve", handle_media)
+    monkeypatch.setattr(cli, "notify", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda secs: None),
+    )
+
+    with pytest.raises(EndTestLoop):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=False))
+
+    assert attempts == 2
+    assert client.closed is True
+
+
+def test_run_loop_retries_notification_without_repeating_lend(monkeypatch):
+    class EndTestLoop(Exception):
+        pass
+
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    existing = watched_media(product_id="existing", available=True)
+    new = watched_media(product_id="new", available=True)
+    poll_results = iter(
+        [
+            cli.WatchPollResult(media=[existing]),
+            cli.WatchPollResult(media=[existing, new]),
+            cli.WatchPollResult(media=[existing, new]),
+        ]
+    )
+    lend_attempts = 0
+    notification_results = iter([False, True])
+
+    def fetch_media(client, config, *, log_summary=False):
+        try:
+            return next(poll_results)
+        except StopIteration:
+            raise EndTestLoop from None
+
+    def handle_media(
+        media,
+        client,
+        config,
+        gourou_client,
+        rented_media_ids,
+        downloaded_media_ids,
+    ):
+        nonlocal lend_attempts
+        if media.product_id in rented_media_ids:
+            return "already handled this run", None
+        lend_attempts += 1
+        rented_media_ids.add(media.product_id)
+        return "auto lent", None
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            poll_interval_secs=1.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+    monkeypatch.setattr(cli, "build_apprise", lambda config: object())
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+    monkeypatch.setattr(cli, "maybe_lend_or_reserve", handle_media)
+    monkeypatch.setattr(cli, "notify", lambda *args, **kwargs: next(notification_results))
+    monkeypatch.setattr(
+        cli,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda secs: None),
+    )
+
+    with pytest.raises(EndTestLoop):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=False))
+
+    assert lend_attempts == 1
     assert client.closed is True
 
 
