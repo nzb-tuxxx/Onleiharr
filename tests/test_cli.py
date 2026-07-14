@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import onleiharr.cli as cli
@@ -494,6 +495,7 @@ def test_fetch_all_watched_media_reports_target_errors():
 
     assert [item.product_id for item in result.media] == ["issue-1"]
     assert result.errors == 1
+    assert result.successful_sources == frozenset({"product:series-1"})
 
 
 def test_run_loop_checks_maintenance_after_poll_error_and_retries(monkeypatch):
@@ -594,6 +596,106 @@ def test_run_loop_retries_startup_error_during_maintenance(monkeypatch):
     cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
 
     assert calls == [("login", None), ("sleep", 300.0), ("login", None), ("fetch", True)]
+    assert client.closed is True
+
+
+def test_run_loop_keeps_healthy_watches_active_and_primes_recovered_watch(monkeypatch):
+    class EndTestLoop(Exception):
+        pass
+
+    class Client:
+        closed = False
+
+        def maintenance_active(self):
+            return False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    healthy_source = "product:healthy"
+    recovering_source = "category:0:recovering"
+    healthy_existing = replace(
+        watched_media(product_id="healthy-existing", available=True),
+        source=healthy_source,
+    )
+    healthy_new = replace(
+        watched_media(product_id="healthy-new", available=True),
+        source=healthy_source,
+    )
+    recovered_existing = replace(
+        watched_media(product_id="recovered-existing", available=True),
+        source=recovering_source,
+    )
+    recovered_new = replace(
+        watched_media(product_id="recovered-new", available=True),
+        source=recovering_source,
+    )
+    poll_results = iter(
+        [
+            cli.WatchPollResult(
+                media=[healthy_existing],
+                errors=1,
+                successful_sources=frozenset({healthy_source}),
+            ),
+            cli.WatchPollResult(
+                media=[healthy_existing, healthy_new],
+                errors=1,
+                successful_sources=frozenset({healthy_source}),
+            ),
+            cli.WatchPollResult(
+                media=[healthy_existing, healthy_new, recovered_existing],
+                successful_sources=frozenset({healthy_source, recovering_source}),
+            ),
+            cli.WatchPollResult(
+                media=[
+                    healthy_existing,
+                    healthy_new,
+                    recovered_existing,
+                    recovered_new,
+                ],
+                successful_sources=frozenset({healthy_source, recovering_source}),
+            ),
+        ]
+    )
+    handled_ids: list[str] = []
+
+    def fetch_media(client, config, *, log_summary=False):
+        try:
+            return next(poll_results)
+        except StopIteration:
+            raise EndTestLoop from None
+
+    def handle_media(media, *args, **kwargs):
+        handled_ids.append(media.product_id)
+        return "handled", None
+
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            poll_interval_secs=1.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+    monkeypatch.setattr(cli, "maybe_lend_or_reserve", handle_media)
+    monkeypatch.setattr(cli, "notify", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda secs: None),
+    )
+
+    with pytest.raises(EndTestLoop):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=False))
+
+    assert handled_ids == ["healthy-new", "recovered-new"]
     assert client.closed is True
 
 

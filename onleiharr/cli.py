@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -68,6 +68,7 @@ class WatchedMedia:
 class WatchPollResult:
     media: list[WatchedMedia]
     errors: int = 0
+    successful_sources: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -566,7 +567,12 @@ def fetch_product_watch_media(client: OnleiheClient, product_id: str) -> list[Wa
     return media
 
 
-def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> CategoryWatchResult:
+def fetch_category_watch_media(
+    client: OnleiheClient,
+    watch: WatchCategory,
+    *,
+    source: str | None = None,
+) -> CategoryWatchResult:
     body = client.build_category_search_body(
         watch.category_ids,
         sort=[{"field": watch.sort_field, "order": watch.sort_order}],
@@ -579,7 +585,7 @@ def fetch_category_watch_media(client: OnleiheClient, watch: WatchCategory) -> C
         body["postFilters"] = merge_filters(post_filters)
     result = client.search_media(raw_body=body, require_login=False)
     media: list[WatchedMedia] = []
-    source = f"category:{watch.description or ','.join(watch.category_ids[:2])}"
+    source = source or f"category:{watch.description or ','.join(watch.category_ids[:2])}"
     total = len(result.items)
     for item in result.items:
         keyword_matched = matches_filter(item, watch.keywords)
@@ -642,9 +648,12 @@ def fetch_all_watched_media(
 ) -> WatchPollResult:
     media: list[WatchedMedia] = []
     errors = 0
+    successful_sources: set[str] = set()
     for product_id in config.general.watch_product_ids:
+        source = f"product:{product_id}"
         try:
             product_media = fetch_product_watch_media(client, product_id)
+            successful_sources.add(source)
             if log_summary:
                 logger.info("Primed product watch %s with %d media items.", product_id, len(product_media))
             else:
@@ -658,10 +667,12 @@ def fetch_all_watched_media(
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch product watch %s: %s", product_id, exc)
-    for watch in config.general.watch_categories:
+    for index, watch in enumerate(config.general.watch_categories):
+        label = watch.description or ",".join(watch.category_ids[:2])
+        source = f"category:{index}:{label}"
         try:
-            category_result = fetch_category_watch_media(client, watch)
-            label = watch.description or ",".join(watch.category_ids[:2])
+            category_result = fetch_category_watch_media(client, watch, source=source)
+            successful_sources.add(source)
             if log_summary:
                 logger.info(
                     "Primed category watch %s with %d keyword-matched media items (%d total).",
@@ -682,7 +693,11 @@ def fetch_all_watched_media(
         except Exception as exc:
             errors += 1
             logger.exception("Failed to fetch category watch %s: %s", watch.description or watch.category_ids, exc)
-    return WatchPollResult(media=media, errors=errors)
+    return WatchPollResult(
+        media=media,
+        errors=errors,
+        successful_sources=frozenset(successful_sources),
+    )
 
 
 def display_title(media: WatchedMedia | MediaItem) -> str:
@@ -1015,6 +1030,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     gourou_client = build_gourou_client(config)
 
     known_media_ids: set[str] = set()
+    primed_sources: set[str] = set()
     rented_media_ids: set[str] = set()
     downloaded_media_ids: set[str] = set()
     first_run = True
@@ -1044,24 +1060,36 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 continue
             current_media_list = poll_result.media
             current_media_by_id = {media.product_id: media for media in current_media_list}
-            current_media_ids = set(current_media_by_id)
+            current_sources_by_id: dict[str, set[str]] = {}
+            for media in current_media_list:
+                current_sources_by_id.setdefault(media.product_id, set()).add(media.source)
+            successful_sources = set(poll_result.successful_sources)
+            if not successful_sources and not poll_result.errors:
+                successful_sources.update(media.source for media in current_media_list)
+            newly_primed_sources = successful_sources - primed_sources
+            new_media_ids: set[str] = set()
+            for product_id, sources in current_sources_by_id.items():
+                if product_id in known_media_ids:
+                    continue
+                if sources & primed_sources:
+                    new_media_ids.add(product_id)
+                elif sources & newly_primed_sources:
+                    known_media_ids.add(product_id)
+            primed_sources.update(newly_primed_sources)
 
             if first_run:
                 if poll_result.errors:
                     logger.warning(
-                        "Initial media cache priming had %d failed watch target(s); keeping startup incomplete.",
+                        "Initial media cache priming had %d failed watch target(s); "
+                        "successful targets remain active and failed targets will be primed after recovery.",
                         poll_result.errors,
                     )
-                    if args.once:
-                        logger.info("--once set; exiting after incomplete first iteration")
-                        break
-                    time.sleep(config.general.poll_interval_secs)
-                    continue
-                known_media_ids = current_media_ids
                 first_run = False
                 logger.info(
-                    "Primed media cache with %d media items; now polling every %d seconds",
+                    "Primed media cache with %d media items from %d watch target(s); "
+                    "now polling every %d seconds",
                     len(known_media_ids),
+                    len(primed_sources),
                     int(config.general.poll_interval_secs),
                 )
                 if test_notify and current_media_list:
@@ -1072,12 +1100,16 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         image_urls=media_image_urls(media),
                     )
             else:
+                if newly_primed_sources:
+                    logger.info(
+                        "Primed %d recovered watch target(s) without treating existing media as new.",
+                        len(newly_primed_sources),
+                    )
                 if poll_result.errors:
                     logger.warning(
                         "Watch poll had %d failed target(s); keeping existing cache for failed targets.",
                         poll_result.errors,
                     )
-                new_media_ids = current_media_ids - known_media_ids
                 if new_media_ids:
                     logger.info("Found %d new media items", len(new_media_ids))
                 else:
