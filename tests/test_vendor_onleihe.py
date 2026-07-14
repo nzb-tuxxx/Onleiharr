@@ -227,8 +227,65 @@ def test_transport_timeout_is_normalized_to_api_error():
         client=http_client,
     )
 
-    with pytest.raises(OnleiheAPIError, match="timed out"):
+    with pytest.raises(OnleiheAPIError, match="ConnectTimeout"):
         client.maintenance_active()
+
+
+def test_cross_origin_download_does_not_send_onleihe_bearer_token():
+    authorization_headers: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorization_headers.append(request.headers.get("Authorization"))
+        return httpx.Response(200, content=b"acsm")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(host="example.invalid", client=http_client)
+    client.session = SessionState(access_token="secret-access-token")
+
+    result = client.download_acsm("https://external-download.invalid/book.acsm?ticket=secret")
+
+    assert result == b"acsm"
+    assert authorization_headers == [None]
+
+
+def test_same_origin_download_keeps_onleihe_bearer_token():
+    authorization_headers: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorization_headers.append(request.headers.get("Authorization"))
+        return httpx.Response(200, content=b"acsm")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(host="example.invalid", client=http_client)
+    client.session = SessionState(access_token="secret-access-token")
+
+    result = client.download_acsm("https://api.onleihe.de/drm/book.acsm?ticket=secret")
+
+    assert result == b"acsm"
+    assert authorization_headers == ["Bearer secret-access-token"]
+
+
+def test_download_error_does_not_expose_url_secrets():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="failure")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OnleiheClient(host="example.invalid", client=http_client)
+
+    with pytest.raises(OnleiheAPIError) as exc_info:
+        client.download_acsm(
+            "https://external-download.invalid/book.acsm?ticket=secret-download-token"
+        )
+
+    assert "https://external-download.invalid/book.acsm" in str(exc_info.value)
+    assert "secret-download-token" not in str(exc_info.value)
+
+
+def test_download_rejects_insecure_http_url():
+    client = OnleiheClient(host="example.invalid")
+
+    with pytest.raises(ValueError, match="absolute HTTPS URL"):
+        client.download_acsm("http://external-download.invalid/book.acsm")
 
 
 def test_maintenance_active_uses_rest_status_code():

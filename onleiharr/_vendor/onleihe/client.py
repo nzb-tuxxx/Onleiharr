@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -696,8 +696,9 @@ class OnleiheClient:
         return with_download_urls(self._get(f"/drm-facade/v1/drm/lend/{lend_id}/player-licence"))
 
     def download_bytes(self, url: str, *, auth: bool = True) -> bytes:
-        if not url.startswith(("http://", "https://")):
-            raise ValueError("url must be absolute")
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme != "https" or not parsed_url.netloc:
+            raise ValueError("download url must be an absolute HTTPS URL")
         response = self._request("GET", url, auth=auth)
         return response.content
 
@@ -792,16 +793,19 @@ class OnleiheClient:
         _retried: bool = False,
     ) -> httpx.Response:
         url = path if path.startswith("http") else f"{self.api_base_url}{path}"
+        safe_url = _url_without_secrets(url)
+        api_origin = _same_origin(url, self.api_base_url)
+        send_auth = auth and api_origin
         headers = dict(self._base_headers)
         if json is not None:
             headers["Content-Type"] = "application/json"
-        if auth and self.session.access_token:
+        if send_auth and self.session.access_token:
             headers["Authorization"] = f"{self.session.token_type} {self.session.access_token}"
         response = self._send_with_retry(method, url, params=params, json=json, headers=headers)
         expected = expected_statuses or {200}
         if response.status_code in expected:
             return response
-        if auth and response.status_code == 401 and self.session.refresh_token and not _retried:
+        if send_auth and response.status_code == 401 and self.session.refresh_token and not _retried:
             self.refresh()
             return self._request(
                 method,
@@ -817,12 +821,12 @@ class OnleiheClient:
             isinstance(payload, dict) and payload.get("messageId") == "no-such-element"
         ):
             exc = OnleiheNotFoundError
-        elif response.status_code in {401, 403}:
+        elif send_auth and response.status_code in {401, 403}:
             exc = OnleiheAuthError
         else:
             exc = OnleiheAPIError
         raise exc(
-            f"Onleihe API request failed: {method} {url} returned {response.status_code}",
+            f"Onleihe API request failed: {method} {safe_url} returned {response.status_code}",
             status_code=response.status_code,
             payload=payload,
         )
@@ -874,15 +878,21 @@ class OnleiheClient:
         headers: dict[str, str],
     ) -> httpx.Response:
         last_error: httpx.HTTPError | None = None
+        safe_url = _url_without_secrets(url)
         for attempt in range(3):
             try:
                 return self._client.request(method, url, params=params, json=json, headers=headers)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 if method.upper() not in {"GET", "HEAD"} or attempt == 2:
-                    raise OnleiheAPIError(f"Onleihe API request failed: {method} {url}: {exc}") from exc
+                    raise OnleiheAPIError(
+                        f"Onleihe API request failed: {method} {safe_url}: {type(exc).__name__}"
+                    ) from None
                 time.sleep(0.2 * (attempt + 1))
-        raise OnleiheAPIError(f"Onleihe API request failed: {method} {url}: {last_error}") from last_error
+        error_type = type(last_error).__name__ if last_error is not None else "HTTPError"
+        raise OnleiheAPIError(
+            f"Onleihe API request failed: {method} {safe_url}: {error_type}"
+        ) from None
 
 
 def _safe_json(response: httpx.Response):
@@ -890,6 +900,32 @@ def _safe_json(response: httpx.Response):
         return response.json()
     except ValueError:
         return response.text
+
+
+def _same_origin(left: str, right: str) -> bool:
+    return _url_origin(left) == _url_origin(right)
+
+
+def _url_origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.casefold()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, (parsed.hostname or "").casefold(), port
+
+
+def _url_without_secrets(url: str) -> str:
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 def _job_id_from_response(payload: dict[str, Any]) -> str | None:
