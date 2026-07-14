@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
-from onleiharr.config import ConfigError, extract_category_ids_from_url, load_config
+from onleiharr.config import (
+    ConfigError,
+    ensure_default_config,
+    extract_category_ids_from_url,
+    load_config,
+)
 
 
 def write_config(tmp_path: Path, body: str) -> Path:
@@ -37,6 +44,18 @@ library_name = "Stadtbibliothek Achim"
 username = "user"
 password = "secret"
 """
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not available")
+def test_ensure_default_config_uses_private_permissions(tmp_path: Path):
+    path = tmp_path / "onleiharr.toml"
+    previous_umask = os.umask(0)
+    try:
+        ensure_default_config(path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp_path: Path):

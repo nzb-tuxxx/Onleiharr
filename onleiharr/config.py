@@ -141,9 +141,16 @@ def default_config_path() -> Path:
 
 def ensure_default_config(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
         return
-    path.write_text(_default_template(), encoding="utf-8")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(_default_template())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _default_template() -> str:
