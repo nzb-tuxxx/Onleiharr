@@ -1,0 +1,23 @@
+# Deny the complete working tree by default. Only package sources and the
+# minimum VCS data needed by hatch-vcs are admitted to the builder stage.
+*
+!Dockerfile
+!LICENSE
+!README.md
+!DISCLAIMER.md
+!pyproject.toml
+!onleiharr/
+!onleiharr/**/
+!onleiharr/**/*.py
+!onleiharr/**/py.typed
+!.git/
+!.git/HEAD
+!.git/objects/
+!.git/objects/**
+!.git/refs/
+!.git/refs/**
+!.git/packed-refs
+!.git/shallow
+
+# The version module is generated from the admitted VCS metadata during build.
+onleiharr/_version.py

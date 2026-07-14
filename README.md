@@ -156,6 +156,21 @@ Apprise URLs are configured in `[notification].urls`; legacy `apprise_config_pat
 - Reload and enable: `systemctl --user daemon-reload && systemctl --user enable --now onleiharr`
 - Logs: `journalctl --user -u onleiharr -f`
 
+## Docker
+Build the image without adding local configuration or session files to the image:
+
+```sh
+docker build -t onleiharr .
+docker run --rm \
+  -v "$HOME/.config/onleiharr:/config" \
+  onleiharr
+```
+
+The container reads `/config/onleiharr.toml`. Keep `session.json` in the same
+mounted directory when using external OpenID authentication. The configuration
+directory is mounted at runtime and is deliberately excluded from the Docker
+build context and image layers.
+
 ## Development
 - Smoke: `python -m py_compile onleiharr/*.py onleiharr/_vendor/onleihe/*.py main.py`
 - Tests: `pytest`
