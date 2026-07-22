@@ -192,6 +192,27 @@ def test_lend_raises_api_error_when_lend_job_fails():
     assert exc_info.value.payload == {"statusCode": 409, "messageId": "no-available-licences"}
 
 
+def test_return_lend_uses_authenticated_onleihe_v3_endpoint():
+    client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
+    client.session = SessionState(
+        access_token="access",
+        user_id="user-id",
+        profile_id="master",
+        library_id="library-id",
+        onleihe_id="onleihe-id",
+    )
+    calls = []
+
+    def fake_delete(path, *, params=None, auth=True):
+        calls.append((path, auth))
+        return {}
+
+    client._delete = fake_delete  # type: ignore[method-assign]
+
+    assert client.return_lend("lend-1") == {}
+    assert calls == [("/ui/v1/onleihe/onleihe-id/users/user-id/lends/lend-1", True)]
+
+
 def test_anonymous_search_preserves_library_context_without_user_id():
     client = OnleiheClient(host="example.invalid", onleihe_id="onleihe-id", library_id="library-id")
     client.session = SessionState(

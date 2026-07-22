@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import sys
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import onleiharr.cli as cli
@@ -1191,3 +1192,307 @@ def watched_media(*, product_id: str, available: bool) -> WatchedMedia:
         keyword_required=False,
         keyword_matched=True,
     )
+
+
+def test_parse_args_supports_explicit_watch_and_download_commands():
+    watch = cli.parse_args(["-c", "config.toml", "watch", "--once"])
+    watch_with_leading_option = cli.parse_args(["--once", "watch"])
+    download = cli.parse_args(["download", "a" * 24, "-c", "config.toml"])
+
+    assert watch.command == "watch"
+    assert watch.once is True
+    assert watch.config_path.name == "config.toml"
+    assert watch_with_leading_option.once is True
+    assert download.command == "download"
+    assert download.target == "a" * 24
+    assert download.config_path.name == "config.toml"
+
+
+def test_install_user_systemd_uses_explicit_watch_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: None)
+
+    cli.install_user_systemd(tmp_path / "onleiharr.toml")
+
+    unit = (tmp_path / ".config/systemd/user/onleiharr.service").read_text(encoding="utf-8")
+    assert f"ExecStart=/usr/bin/onleiharr -c {tmp_path / 'onleiharr.toml'} watch" in unit
+
+
+def test_implicit_watcher_warns_but_explicit_watch_does_not(tmp_path, monkeypatch, caplog):
+    config = SimpleNamespace(
+        general=SimpleNamespace(poll_interval_secs=300.0, watch_product_ids=[], watch_categories=[]),
+        notification=SimpleNamespace(test_notification=False),
+        config_path=tmp_path / "config.toml",
+    )
+    monkeypatch.setattr(cli, "ensure_config_or_exit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "load_config", lambda path: config)
+    monkeypatch.setattr(cli, "run_startup_checks", lambda config: None)
+    monkeypatch.setattr(cli, "run_loop", lambda config, args: None)
+
+    with caplog.at_level("WARNING"):
+        assert cli.main(["-c", str(tmp_path / "config.toml")]) == 0
+    assert "without the 'watch' command is deprecated" in caplog.text
+    assert f"onleiharr --install-as-user-systemd -c {tmp_path / 'config.toml'}" in caplog.text
+    assert "systemctl --user daemon-reload" in caplog.text
+    assert "systemctl --user restart onleiharr" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert cli.main(["watch", "-c", str(tmp_path / "config.toml")]) == 0
+    assert "without the 'watch' command is deprecated" not in caplog.text
+
+
+def test_parse_download_target_accepts_id_and_matching_url():
+    product_id = "69b3ed6bc56755bf97cb3b9a"
+
+    assert cli.parse_download_target(product_id.upper(), expected_host="example.onleihe.de") == product_id
+    assert (
+        cli.parse_download_target(
+            f"https://example.onleihe.de/search/mediadetail?productId={product_id}",
+            expected_host="example.onleihe.de",
+        )
+        == product_id
+    )
+
+
+def test_parse_download_target_rejects_other_host_and_ambiguous_id():
+    product_id = "69b3ed6bc56755bf97cb3b9a"
+
+    with pytest.raises(ValueError, match="does not match"):
+        cli.parse_download_target(
+            f"https://other.onleihe.de/search?productId={product_id}",
+            expected_host="example.onleihe.de",
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        cli.parse_download_target(
+            f"https://example.onleihe.de/search?productId={product_id}&productId={'a' * 24}",
+            expected_host="example.onleihe.de",
+        )
+
+
+def _download_config(tmp_path):
+    return SimpleNamespace(
+        credentials=SimpleNamespace(host="example.onleihe.de"),
+        gourou=SimpleNamespace(
+            remove_drm=False,
+            remove_drm_ack=None,
+            download_permissions=0o644,
+        ),
+    )
+
+
+def _download_product(product_id: str = "69b3ed6bc56755bf97cb3b9a") -> ProductDetails:
+    return ProductDetails(
+        id=product_id,
+        product_id=product_id,
+        title="Test Book",
+        subtitle=None,
+        media_type="E_BOOK",
+        availability={"isAvailable": True},
+    )
+
+
+class _ReadyGourou:
+    def __init__(self, config):
+        self.config = config
+
+    def validate_download_readiness(self):
+        return None
+
+
+def test_download_existing_lending_is_not_returned(tmp_path, monkeypatch):
+    product = _download_product()
+
+    class Client:
+        def __init__(self):
+            self.lend_calls = 0
+            self.return_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_product(self, product_id, *, include_user_context=True):
+            return product
+
+        def get_my_media_items(self, *, include_player_licences=True):
+            return [
+                MediaItem(
+                    id=product.id,
+                    product_id=product.product_id,
+                    title=product.title,
+                    subtitle=None,
+                    media_type="E_BOOK",
+                    lend_id="existing-lend",
+                    acsm_url="https://download.invalid/book.acsm",
+                )
+            ]
+
+        def lend(self, product_id):
+            self.lend_calls += 1
+
+        def return_lend(self, lend_id):
+            self.return_calls += 1
+
+    client = Client()
+    monkeypatch.setattr(cli, "GourouClient", _ReadyGourou)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli, "download_acsm_with_gourou", lambda **kwargs: (True, tmp_path / "book.epub"))
+
+    assert cli.run_download_command(_download_config(tmp_path), product.product_id) == 0
+    assert client.lend_calls == 0
+    assert client.return_calls == 0
+
+
+@pytest.mark.parametrize("downloaded, expected_status", [(True, 0), (False, 1)])
+def test_download_new_lending_is_returned_even_after_download_failure(
+    tmp_path, monkeypatch, downloaded, expected_status
+):
+    product = _download_product()
+
+    class Client:
+        def __init__(self):
+            self.lent = False
+            self.returned = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_product(self, product_id, *, include_user_context=True):
+            return product
+
+        def get_my_media_items(self, *, include_player_licences=True):
+            if self.returned or not self.lent:
+                return []
+            return [
+                MediaItem(
+                    id=product.id,
+                    product_id=product.product_id,
+                    title=product.title,
+                    subtitle=None,
+                    media_type="E_BOOK",
+                    lend_id="new-lend",
+                )
+            ]
+
+        def lend(self, product_id):
+            self.lent = True
+            return {"lendId": "new-lend", "acsm_url": "https://download.invalid/book.acsm"}
+
+        def return_lend(self, lend_id):
+            assert lend_id == "new-lend"
+            self.returned = True
+            return {}
+
+    client = Client()
+    monkeypatch.setattr(cli, "GourouClient", _ReadyGourou)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(
+        cli,
+        "download_acsm_with_gourou",
+        lambda **kwargs: (downloaded, tmp_path / "book.epub" if downloaded else None),
+    )
+
+    assert cli.run_download_command(_download_config(tmp_path), product.product_id) == expected_status
+    assert client.returned is True
+
+
+def test_download_readiness_failure_happens_before_login(tmp_path, monkeypatch):
+    class NotReadyGourou(_ReadyGourou):
+        def validate_download_readiness(self):
+            raise cli.GourouError("not activated")
+
+    monkeypatch.setattr(cli, "GourouClient", NotReadyGourou)
+    monkeypatch.setattr(
+        cli,
+        "create_onleihe_client",
+        lambda config: pytest.fail("client must not be created when Gourou is not ready"),
+    )
+
+    assert cli.run_download_command(_download_config(tmp_path), "69b3ed6bc56755bf97cb3b9a") == 1
+
+
+def test_select_download_media_offers_interactive_container_choice(monkeypatch):
+    first = _download_product("a" * 24)
+    second = _download_product("b" * 24)
+    container = _download_product("c" * 24)
+    container.raw = {"product": {"isContainer": True}}
+    container.included_media = [first, second]
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+
+    assert cli.select_download_media(container, input_func=lambda prompt: "2") is second
+
+
+def test_download_without_lend_id_does_not_start_acsm_download(tmp_path, monkeypatch):
+    product = _download_product()
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_product(self, product_id, *, include_user_context=True):
+            return product
+
+        def get_my_media_items(self, *, include_player_licences=True):
+            return []
+
+        def lend(self, product_id):
+            return {"acsm_url": "https://download.invalid/book.acsm"}
+
+    monkeypatch.setattr(cli, "GourouClient", _ReadyGourou)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: Client())
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda interval: None)
+    monkeypatch.setattr(
+        cli,
+        "download_acsm_with_gourou",
+        lambda **kwargs: pytest.fail("download must not start without a lending ID"),
+    )
+
+    assert cli.run_download_command(_download_config(tmp_path), product.product_id) == 1
+
+
+def test_download_reports_failed_return_and_keeps_failed_status(tmp_path, monkeypatch):
+    product = _download_product()
+
+    class Client:
+        def __init__(self):
+            self.lent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_product(self, product_id, *, include_user_context=True):
+            return product
+
+        def get_my_media_items(self, *, include_player_licences=True):
+            return []
+
+        def lend(self, product_id):
+            self.lent = True
+            return {"lendId": "new-lend", "acsm_url": "https://download.invalid/book.acsm"}
+
+        def return_lend(self, lend_id):
+            raise OnleiheAPIError("return failed", status_code=500)
+
+    monkeypatch.setattr(cli, "GourouClient", _ReadyGourou)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: Client())
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(cli, "download_acsm_with_gourou", lambda **kwargs: (True, tmp_path / "book.epub"))
+
+    assert cli.run_download_command(_download_config(tmp_path), product.product_id) == 1

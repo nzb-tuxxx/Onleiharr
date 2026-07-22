@@ -55,6 +55,26 @@ class GourouClient:
     def has_binaries(self, names: list[str]) -> bool:
         return all(self._find_bin(name) is not None for name in names)
 
+    def validate_download_readiness(self) -> None:
+        """Fail early when an ACSM download cannot be completed locally."""
+        self._resolve_bin("acsmdownloader")
+        adept_dir = self._require_adept_dir()
+        for path in (
+            adept_dir / "device.xml",
+            adept_dir / "activation.xml",
+            adept_dir / "devicesalt",
+        ):
+            if not os.access(path, os.R_OK):
+                raise GourouError(f"ADEPT device file is not readable: {path}")
+
+        output_dir = self._expand_user_optional_path(self.config.download_dir) or Path.cwd()
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise GourouError(f"Download directory cannot be created: {output_dir}: {exc}") from exc
+        if not output_dir.is_dir() or not os.access(output_dir, os.W_OK):
+            raise GourouError(f"Download directory is not writable: {output_dir}")
+
     def activate_device(
         self,
         username: str | None = None,
@@ -228,7 +248,7 @@ class GourouClient:
             if path:
                 return path
             candidate = bin_dir / name
-            if candidate.is_file():
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
 
         return None

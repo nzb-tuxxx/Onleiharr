@@ -4,6 +4,7 @@ import argparse
 import html
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import parse_qs, urlparse
 
 import apprise
 
@@ -23,6 +25,7 @@ from onleiharr._vendor.onleihe import (
     OnleiheClient,
     OnleiheNotFoundError,
     ProductDetails,
+    SessionState,
 )
 from onleiharr.auth import (
     default_session_path,
@@ -44,6 +47,7 @@ from onleiharr.wizard import run_first_start_wizard
 logger = logging.getLogger(__name__)
 
 DRM_ACK_TOKEN = "I_UNDERSTAND"
+PRODUCT_ID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
 
 
 @dataclass(frozen=True)
@@ -112,7 +116,7 @@ Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=default.target
-""".format(exec_start=f"{executable} -c {config_path}")
+""".format(exec_start=f"{executable} -c {config_path} watch")
 
     unit_path.write_text(unit_content, encoding="utf-8")
 
@@ -128,10 +132,29 @@ WantedBy=default.target
     logger.info("  journalctl --user -u onleiharr -f")
 
 
+def _add_common_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    default = argparse.SUPPRESS if suppress_defaults else None
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest="config_path",
+        type=Path,
+        default=default,
+        help="Path to onleiharr.toml",
+    )
+    parser.add_argument(
+        "--log-level",
+        dest="log_level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default=argparse.SUPPRESS if suppress_defaults else "INFO",
+        help="Logging verbosity",
+    )
+    parser.add_argument("--version", action="version", version=load_version())
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Onleiharr watcher and auto-renter")
-    parser.add_argument("-c", "--config", dest="config_path", type=Path, help="Path to onleiharr.toml")
-    parser.add_argument("--version", action="version", version=load_version())
+    _add_common_options(parser)
     parser.add_argument(
         "--install-as-user-systemd",
         action="store_true",
@@ -149,13 +172,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         dest="no_wizard",
         help="Do not start the interactive wizard when the config is missing",
-    )
-    parser.add_argument(
-        "--log-level",
-        dest="log_level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default="INFO",
-        help="Logging verbosity",
     )
     parser.add_argument("--once", action="store_true", help="Run a single poll iteration and exit")
     parser.add_argument(
@@ -176,6 +192,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="test_notification",
         help="Force a notification test on startup",
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+    watch_parser = subparsers.add_parser("watch", help="Run the Onleiharr watcher")
+    _add_common_options(watch_parser, suppress_defaults=True)
+    watch_parser.add_argument(
+        "--once",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Run a single poll iteration and exit",
+    )
+    watch_parser.add_argument(
+        "--interval",
+        type=float,
+        dest="interval",
+        default=argparse.SUPPRESS,
+        help="Override poll interval in seconds",
+    )
+    watch_parser.add_argument(
+        "--test-notification",
+        action="store_true",
+        dest="test_notification",
+        default=argparse.SUPPRESS,
+        help="Force a notification test on startup",
+    )
+
+    download_parser = subparsers.add_parser("download", help="Download one Onleihe medium")
+    _add_common_options(download_parser, suppress_defaults=True)
+    download_parser.add_argument("target", help="Onleihe product ID or product URL")
     return parser.parse_args(argv)
 
 
@@ -364,7 +408,10 @@ def create_onleihe_client(config: AppConfig) -> OnleiheClient:
     session_callback = None
     if config.credentials.auth_type == "open_id":
         session_path = config.credentials.session_path or default_session_path(config.config_path)
-        session_callback = lambda session: save_session(session_path, session)
+
+        def session_callback(session: SessionState) -> None:
+            save_session(session_path, session)
+
     return OnleiheClient(
         host=config.credentials.host,
         onleihe_id=config.credentials.onleihe_id,
@@ -804,6 +851,217 @@ def build_gourou_client(config: AppConfig) -> GourouClient | None:
         )
         return None
     return gourou_client
+
+
+def parse_download_target(value: str, *, expected_host: str) -> str:
+    value = value.strip()
+    if PRODUCT_ID_RE.fullmatch(value):
+        return value.casefold()
+
+    parsed = urlparse(value)
+    if parsed.scheme.casefold() != "https" or not parsed.hostname:
+        raise ValueError("target must be a 24-character product ID or an HTTPS Onleihe URL")
+    if parsed.hostname.casefold() != expected_host.casefold():
+        raise ValueError(
+            f"product URL host {parsed.hostname!r} does not match configured host {expected_host!r}"
+        )
+    product_ids = [item.strip() for item in parse_qs(parsed.query).get("productId", []) if item.strip()]
+    if len(product_ids) != 1 or not PRODUCT_ID_RE.fullmatch(product_ids[0]):
+        raise ValueError("product URL must contain exactly one valid productId parameter")
+    return product_ids[0].casefold()
+
+
+def select_download_media(
+    product: ProductDetails,
+    *,
+    input_func=input,
+) -> MediaItem | ProductDetails:
+    if not product_is_container(product):
+        return product
+    media = product.included_media
+    if not media:
+        raise ConfigError(f"Product {product_label(product)} is a container without downloadable media.")
+    if len(media) == 1:
+        return media[0]
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        choices = ", ".join(
+            f"{display_title(item)} ({item.product_id or item.id or 'unknown'})" for item in media
+        )
+        raise ConfigError(f"Product contains multiple media; pass one product ID directly: {choices}")
+
+    print("Select a medium to download:")
+    for index, item in enumerate(media, start=1):
+        print(
+            f"  {index}. {display_title(item)} "
+            f"[{item.media_type or 'MEDIA'}] ({item.product_id or item.id or 'unknown'})"
+        )
+    while True:
+        answer = input_func("Selection (empty to cancel): ").strip()
+        if not answer:
+            raise ConfigError("Download cancelled.")
+        try:
+            selected = int(answer)
+        except ValueError:
+            selected = 0
+        if 1 <= selected <= len(media):
+            return media[selected - 1]
+        print(f"Enter a number between 1 and {len(media)}.")
+
+
+def _media_product_id(media: MediaItem | ProductDetails) -> str:
+    product_id = media.product_id or media.id
+    if not product_id:
+        raise ConfigError("Selected medium has no product ID.")
+    return str(product_id)
+
+
+def _media_is_available(media: MediaItem | ProductDetails) -> bool:
+    availability = media.availability or {}
+    count = availability.get("availability", 0)
+    return bool(availability.get("isAvailable") or (isinstance(count, int) and count > 0))
+
+
+def _find_lend_id(payload: object) -> str | None:
+    if isinstance(payload, dict):
+        for key in ("lendId", "lend_id"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        for value in payload.values():
+            found = _find_lend_id(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _find_lend_id(value)
+            if found:
+                return found
+    return None
+
+
+def _find_my_media_item(client: OnleiheClient, product_id: str) -> MediaItem | None:
+    for item in client.get_my_media_items(include_player_licences=False):
+        if item.product_id == product_id or item.id == product_id:
+            return item
+    return None
+
+
+def _wait_for_lend_id(
+    client: OnleiheClient,
+    product_id: str,
+    *,
+    attempts: int = 6,
+    interval: float = 0.5,
+) -> tuple[str | None, MediaItem | None]:
+    for attempt in range(attempts):
+        item = _find_my_media_item(client, product_id)
+        if item is not None and item.lend_id:
+            return item.lend_id, item
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    return None, None
+
+
+def _verify_lend_returned(
+    client: OnleiheClient,
+    product_id: str,
+    *,
+    attempts: int = 6,
+    interval: float = 0.5,
+) -> bool:
+    for attempt in range(attempts):
+        items = client.get_my_media_items(include_player_licences=False)
+        if not any(item.product_id == product_id or item.id == product_id for item in items):
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    return False
+
+
+def run_download_command(config: AppConfig, target: str) -> int:
+    try:
+        product_id = parse_download_target(target, expected_host=config.credentials.host)
+    except ValueError as exc:
+        logger.error("Invalid download target: %s", exc)
+        return 1
+
+    run_startup_checks(config)
+    gourou_client = GourouClient(config.gourou)
+    try:
+        gourou_client.validate_download_readiness()
+    except GourouError as exc:
+        logger.warning("Gourou download is not ready: %s", exc)
+        return 1
+
+    with create_onleihe_client(config) as client:
+        login(client, config)
+        product = client.get_product(product_id, include_user_context=True)
+        selected = select_download_media(product)
+        selected_id = _media_product_id(selected)
+        title = display_title(selected)
+
+        existing = _find_my_media_item(client, selected_id)
+        created_lend_id: str | None = None
+        acsm_url = existing.acsm_url if existing is not None else selected.acsm_url
+        if existing is not None and not acsm_url and existing.lend_id:
+            acsm_url = client.get_player_licence(existing.lend_id).get("acsm_url")
+        if existing is None:
+            if not _media_is_available(selected):
+                logger.error("'%s' is not currently available; download does not create reservations.", title)
+                return 1
+            logger.warning(
+                "This command will lend '%s', download it, and return the new lending immediately. "
+                "Early return ends your right to use the downloaded copy; delete it yourself to comply "
+                "with the Onleihe terms.",
+                title,
+            )
+            lend_result = client.lend(selected_id)
+            created_lend_id = _find_lend_id(lend_result)
+            lent_item: MediaItem | None = None
+            if created_lend_id is None:
+                created_lend_id, lent_item = _wait_for_lend_id(client, selected_id)
+            if created_lend_id is None:
+                logger.error(
+                    "The lending succeeded, but its lending ID could not be determined. "
+                    "No download was started; return the medium manually in Onleihe."
+                )
+                return 1
+            if lent_item is None:
+                lent_item = _find_my_media_item(client, selected_id)
+            acsm_url = lend_result.get("acsm_url") or (lent_item.acsm_url if lent_item else None)
+            if not acsm_url and lent_item is not None and lent_item.lend_id:
+                acsm_url = client.get_player_licence(lent_item.lend_id).get("acsm_url")
+
+        downloaded = False
+        returned = created_lend_id is None
+        try:
+            downloaded, _ = download_acsm_with_gourou(
+                product_id=selected_id,
+                title=title,
+                acsm_url=acsm_url,
+                client=client,
+                gourou_client=gourou_client,
+            )
+        finally:
+            if created_lend_id is not None:
+                try:
+                    client.return_lend(created_lend_id)
+                    returned = _verify_lend_returned(client, selected_id)
+                    if returned:
+                        logger.info("Returned newly created lending for '%s'.", title)
+                    else:
+                        logger.error(
+                            "Return was accepted but could not be verified; the lending for '%s' may still be active.",
+                            title,
+                        )
+                except OnleiheAPIError as exc:
+                    logger.error(
+                        "Could not return the newly created lending for '%s'; it may still be active: %s",
+                        title,
+                        exc,
+                    )
+                    returned = False
+        return 0 if downloaded and returned else 1
 
 
 def maybe_lend_or_reserve(
@@ -1280,6 +1538,34 @@ def main(argv: list[str] | None = None) -> int:
                 )
         logger.info("External Onleihe login stored in %s.", session_path)
         return 0
+
+    if args.command == "download":
+        try:
+            return run_download_command(config, args.target)
+        except OnleiheAuthError as exc:
+            logger.error("Onleihe authentication failed: %s", exc)
+            return 1
+        except OnleiheAPIError as exc:
+            logger.error("Onleihe API error: %s", exc)
+            return 1
+        except ConfigError as exc:
+            logger.error("Download error: %s", exc)
+            return 1
+        except KeyboardInterrupt:
+            logger.info("Download interrupted by user")
+            return 1
+
+    if args.command is None:
+        reinstall_command = (
+            f"onleiharr --install-as-user-systemd -c {shlex.quote(str(config.config_path))}"
+        )
+        logger.warning(
+            "Starting the watcher without the 'watch' command is deprecated and will be removed "
+            "in a future release. Start it with 'onleiharr watch'. If this message comes from an "
+            "installed user service, update it with '%s', then run 'systemctl --user daemon-reload' "
+            "and 'systemctl --user restart onleiharr'.",
+            reinstall_command,
+        )
 
     logger.info(
         "Loaded config from %s with %d product watches and %d category watches.",

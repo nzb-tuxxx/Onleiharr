@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "onleiharr"
 dynamic = ["version"]
-description = "Onleihe watcher with notifications and auto-rent"
+description = "Onleihe watcher and downloader with notifications and auto-lending"
 authors = [{ name = "Onleiharr Maintainers" }]
 readme = "README.md"
 license = "MIT"

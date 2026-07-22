@@ -5,13 +5,14 @@
 >
 > Install the 0.3 beta only if your Onleihe account/library already uses Onleihe v3. The beta can still contain bugs; please report issues at <https://github.com/nzb-tuxxx/Onleiharr/issues>.
 >
-> Onleihe v2 users should stay on the latest stable v2-compatible release. Install the Onleihe v3 beta using the exact version `0.3.0b3`; do not enable pre-releases globally because that can also select incompatible pre-release dependencies.
+> Onleihe v2 users should stay on the latest stable v2-compatible release. Install the Onleihe v3 beta using the exact version `0.3.0b4`; do not enable pre-releases globally because that can also select incompatible pre-release dependencies.
 
 Onleiharr watches Onleihe v3 products, product series, and category searches, sends notifications for new media, and can auto-lend/reserve matching items. The Onleihe v3 API client is vendored under `onleiharr/_vendor/onleihe`; no separate `onleihe` PyPI package is required.
 
 - Watch product or series IDs directly.
 - Watch broad category searches with keyword filters.
 - Auto-lend or reserve watched items.
+- Download a product or product URL manually from the CLI.
 - Optional auto-downloads via libgourou and DRM removal with explicit acknowledgment.
 - Send downloaded media through Apprise targets that support attachments.
 
@@ -24,9 +25,9 @@ Stable / Onleihe v2-compatible:
 - `onleiharr --version`
 
 Public Beta / Onleihe v3:
-- pipx install or replacement: `pipx install --force 'onleiharr==0.3.0b3'`
-- pip install: `pip install 'onleiharr==0.3.0b3'`
-- pip upgrade: `pip install --upgrade 'onleiharr==0.3.0b3'`
+- pipx install or replacement: `pipx install --force 'onleiharr==0.3.0b4'`
+- pip install: `pip install 'onleiharr==0.3.0b4'`
+- pip upgrade: `pip install --upgrade 'onleiharr==0.3.0b4'`
 - `onleiharr --version`
 
 Before starting the 0.3 beta after upgrading from a v2-compatible Onleiharr release, move or remove your old config file. The old v2 config format is not compatible with 0.3 because watches now use Onleihe v3 product/category IDs instead of legacy URLs. On first start, Onleiharr can create a new config with the interactive wizard; alternatively run `onleiharr --init-config` and choose the dummy config template.
@@ -37,10 +38,23 @@ From source:
 - `python3 -m onleiharr`
 
 ## Quick Start
-1. Run `onleiharr` in an interactive terminal. If no config exists, the first-start wizard opens.
+1. Run `onleiharr watch` in an interactive terminal. If no config exists, the first-start wizard opens.
 2. Select your library, validate your credentials, and add optional product/category watches.
-3. Test once: `onleiharr --once`
-4. Run continuously: `onleiharr`
+3. Test once: `onleiharr watch --once`
+4. Run continuously: `onleiharr watch`
+
+Manual downloads use the same config and login as the watcher:
+
+- Download one product: `onleiharr download 69b3ed6bc56755bf97cb3b9a`
+- Download from a product URL: `onleiharr download 'https://niedersachsen.onleihe.de/search/mediadetail?productId=69b3ed6bc56755bf97cb3b9a'`
+
+If the config is missing in an interactive terminal, the normal first-start wizard opens.
+
+Running the watcher as bare `onleiharr` remains temporarily compatible but is deprecated and will be
+removed in a future release. Scripts and service units should use `onleiharr watch`.
+Re-running `onleiharr --install-as-user-systemd -c /path/to/onleiharr.toml` overwrites an existing
+user unit with the explicit command. Afterwards run `systemctl --user daemon-reload` and
+`systemctl --user restart onleiharr`.
 
 Manual config setup:
 - Start the wizard explicitly: `onleiharr --init-config`
@@ -141,6 +155,16 @@ Environment overrides:
 
 ## libgourou
 libgourou is optional. Onleiharr can notify and auto-lend/reserve without it, but downloads require `acsmdownloader`.
+
+### One-off downloads
+
+`onleiharr download URL_OR_PRODUCT_ID` requires `acsmdownloader`, an activated ADEPT directory, and a
+writable download directory. Existing lendings are reused; newly created lendings are returned after
+the download. Series can be selected interactively, while scripts should pass an individual product ID.
+
+> [!WARNING]
+> An early return ends the right to use the downloaded copy. Onleiharr does not delete local files;
+> you are responsible for deleting returned media as required by the Onleihe terms of use.
 
 To enable DRM removal, set both:
 - `gourou.remove_drm = true`
