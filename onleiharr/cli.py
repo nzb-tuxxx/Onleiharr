@@ -440,6 +440,30 @@ def login(client: OnleiheClient, config: AppConfig) -> None:
     )
 
 
+def recover_upa_authentication(
+    client: OnleiheClient,
+    config: AppConfig,
+    *,
+    failed_operation: str,
+    recovery_already_attempted: bool,
+) -> bool:
+    if config.credentials.auth_type != "upa":
+        return False
+    if recovery_already_attempted:
+        logger.error(
+            "Onleihe authentication failed again during %s before a poll cycle completed.",
+            failed_operation,
+        )
+        return False
+    logger.warning(
+        "Onleihe authentication expired during %s; attempting a fresh UPA login.",
+        failed_operation,
+    )
+    login(client, config)
+    logger.info("Onleihe UPA login recovered; retrying the poll cycle.")
+    return True
+
+
 def media_from_item(
     item: MediaItem,
     *,
@@ -1296,6 +1320,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
     lendings_interval_secs = float(config.gourou.lendings_poll_interval_secs)
     lendings_enabled = gourou_client is not None and lendings_interval_secs > 0
     lendings_next_check_ts: float | None = None
+    auth_recovery_attempted = False
 
     try:
         lendings_next_check_ts = initialize_onleihe_session(
@@ -1309,7 +1334,18 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
         )
 
         while True:
-            poll_result = fetch_all_watched_media(client, config, log_summary=first_run)
+            try:
+                poll_result = fetch_all_watched_media(client, config, log_summary=first_run)
+            except OnleiheAuthError:
+                if not recover_upa_authentication(
+                    client,
+                    config,
+                    failed_operation="watch poll",
+                    recovery_already_attempted=auth_recovery_attempted,
+                ):
+                    raise
+                auth_recovery_attempted = True
+                continue
             if poll_result.errors and suspend_if_maintenance_active(
                 client,
                 config.general.poll_interval_secs,
@@ -1374,6 +1410,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                     logger.debug("No new media found this cycle")
 
                 processed_media_ids: set[str] = set()
+                restart_poll_after_auth_recovery = False
                 for product_id in new_media_ids:
                     media = current_media_by_id[product_id]
                     try:
@@ -1411,7 +1448,16 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         )
                         break
                     except OnleiheAuthError:
-                        raise
+                        if not recover_upa_authentication(
+                            client,
+                            config,
+                            failed_operation=f"handling media '{media.title}'",
+                            recovery_already_attempted=auth_recovery_attempted,
+                        ):
+                            raise
+                        auth_recovery_attempted = True
+                        restart_poll_after_auth_recovery = True
+                        break
                     except OnleiheAPIError as exc:
                         if suspend_if_maintenance_active(
                             client,
@@ -1424,6 +1470,8 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                         logger.exception("Error handling media '%s': %s", media.title, exc)
 
                 known_media_ids.update(processed_media_ids)
+                if restart_poll_after_auth_recovery:
+                    continue
 
             if lendings_enabled and lendings_next_check_ts is not None and time.monotonic() >= lendings_next_check_ts:
                 try:
@@ -1437,7 +1485,15 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                     )
                     logger.debug("My-media scan handled %d items.", count)
                 except OnleiheAuthError:
-                    raise
+                    if not recover_upa_authentication(
+                        client,
+                        config,
+                        failed_operation="my-media scan",
+                        recovery_already_attempted=auth_recovery_attempted,
+                    ):
+                        raise
+                    auth_recovery_attempted = True
+                    continue
                 except OnleiheAPIError as exc:
                     if not suspend_if_maintenance_active(
                         client,
@@ -1453,6 +1509,7 @@ def run_loop(config: AppConfig, args: argparse.Namespace) -> None:
                 logger.info("--once set; exiting after first iteration")
                 break
 
+            auth_recovery_attempted = False
             time.sleep(config.general.poll_interval_secs)
     except OnleiheAuthError:
         if config.credentials.auth_type == "open_id":

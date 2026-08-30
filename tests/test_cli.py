@@ -600,6 +600,226 @@ def test_run_loop_retries_startup_error_during_maintenance(monkeypatch):
     assert client.closed is True
 
 
+def test_run_loop_recovers_upa_authentication_once(monkeypatch):
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    calls = []
+    config = SimpleNamespace(
+        credentials=SimpleNamespace(auth_type="upa"),
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: calls.append("login"))
+
+    def fetch_media(client, config, *, log_summary=False):
+        calls.append("fetch")
+        if calls.count("fetch") == 1:
+            raise OnleiheAuthError("refresh rejected", status_code=401)
+        return cli.WatchPollResult(media=[])
+
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+
+    cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
+
+    assert calls == ["login", "fetch", "login", "fetch"]
+    assert client.closed is True
+
+
+def test_run_loop_exits_after_second_auth_failure_in_retried_cycle(monkeypatch):
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    calls = []
+    config = SimpleNamespace(
+        credentials=SimpleNamespace(auth_type="upa"),
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: calls.append("login"))
+
+    def fetch_media(client, config, *, log_summary=False):
+        calls.append("fetch")
+        raise OnleiheAuthError("refresh rejected", status_code=401)
+
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+
+    with pytest.raises(OnleiheAuthError):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
+
+    assert calls == ["login", "fetch", "login", "fetch"]
+    assert client.closed is True
+
+
+def test_run_loop_resets_auth_recovery_after_successful_cycle(monkeypatch):
+    class EndTestLoop(Exception):
+        pass
+
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    calls = []
+    fetch_results = iter(["auth", "success", "auth", "success"])
+    config = SimpleNamespace(
+        credentials=SimpleNamespace(auth_type="upa"),
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: calls.append("login"))
+    monkeypatch.setattr(
+        cli,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda secs: None),
+    )
+
+    def fetch_media(client, config, *, log_summary=False):
+        calls.append("fetch")
+        try:
+            result = next(fetch_results)
+        except StopIteration:
+            raise EndTestLoop from None
+        if result == "auth":
+            raise OnleiheAuthError("refresh rejected", status_code=401)
+        return cli.WatchPollResult(media=[])
+
+    monkeypatch.setattr(cli, "fetch_all_watched_media", fetch_media)
+
+    with pytest.raises(EndTestLoop):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=False))
+
+    assert calls == ["login", "fetch", "login", "fetch", "fetch", "login", "fetch", "fetch"]
+    assert client.closed is True
+
+
+def test_run_loop_propagates_failed_upa_relogin(monkeypatch):
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    login_calls = 0
+    config = SimpleNamespace(
+        credentials=SimpleNamespace(auth_type="upa"),
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+
+    def fake_login(client, config):
+        nonlocal login_calls
+        login_calls += 1
+        if login_calls == 2:
+            raise OnleiheAuthError("login rejected", status_code=401)
+
+    monkeypatch.setattr(cli, "login", fake_login)
+    monkeypatch.setattr(
+        cli,
+        "fetch_all_watched_media",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OnleiheAuthError("refresh rejected", status_code=401)
+        ),
+    )
+
+    with pytest.raises(OnleiheAuthError, match="login rejected"):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
+
+    assert login_calls == 2
+    assert client.closed is True
+
+
+def test_run_loop_keeps_open_id_manual_recovery(monkeypatch):
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    notifications = []
+    config = SimpleNamespace(
+        credentials=SimpleNamespace(auth_type="open_id"),
+        general=SimpleNamespace(
+            poll_interval_secs=300.0,
+            watch_product_ids=[],
+            watch_categories=[],
+        ),
+        notification=SimpleNamespace(test_notification=False),
+        gourou=SimpleNamespace(lendings_poll_interval_secs=0.0),
+    )
+
+    monkeypatch.setattr(cli, "build_apprise", lambda config: None)
+    monkeypatch.setattr(cli, "create_onleihe_client", lambda config: client)
+    monkeypatch.setattr(cli, "build_gourou_client", lambda config: None)
+    monkeypatch.setattr(cli, "login", lambda client, config: None)
+    monkeypatch.setattr(
+        cli,
+        "fetch_all_watched_media",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OnleiheAuthError("refresh rejected", status_code=401)
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "notify_external_auth_required",
+        lambda apobj, config: notifications.append(config),
+    )
+
+    with pytest.raises(OnleiheAuthError):
+        cli.run_loop(config, SimpleNamespace(test_notification=False, once=True))
+
+    assert notifications == [config]
+    assert client.closed is True
+
+
 def test_run_loop_keeps_healthy_watches_active_and_primes_recovered_watch(monkeypatch):
     class EndTestLoop(Exception):
         pass

@@ -6,7 +6,9 @@ import httpx
 import pytest
 
 from onleiharr._vendor.onleihe.client import OnleiheClient
-from onleiharr._vendor.onleihe.exceptions import OnleiheAPIError, OnleiheNotFoundError
+from onleiharr._vendor.onleihe.exceptions import OnleiheAPIError
+from onleiharr._vendor.onleihe.exceptions import OnleiheAuthError
+from onleiharr._vendor.onleihe.exceptions import OnleiheNotFoundError
 from onleiharr._vendor.onleihe.models import JobStatus
 from onleiharr._vendor.onleihe.models import SessionState
 from onleiharr._vendor.onleihe.parsers import parse_job_status
@@ -107,6 +109,65 @@ def test_login_open_id_exchanges_code_with_onleihe_api():
     session = client.login_open_id("one-time-code", redirect_url="https://muenchen.onleihe.de")
     assert session.access_token == "access"
     assert session.refresh_token == "refresh"
+
+
+def test_login_does_not_send_stale_bearer_token():
+    authorization_headers = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorization_headers.append(request.headers.get("Authorization"))
+        return httpx.Response(
+            200,
+            json={"accessToken": "new-access", "refreshToken": "new-refresh"},
+        )
+
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        library_id="library-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.session = SessionState(access_token="stale-access", refresh_token="stale-refresh")
+
+    client.login("user", "password")
+
+    assert authorization_headers == [None]
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_refresh_reclassifies_rejected_token_as_auth_error(status_code):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"message": "rejected"})
+
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        library_id="library-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.session = SessionState(access_token="access", refresh_token="refresh")
+
+    with pytest.raises(OnleiheAuthError) as exc_info:
+        client.refresh()
+
+    assert exc_info.value.status_code == status_code
+
+
+def test_login_reclassifies_rejected_credentials_as_auth_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "rejected"})
+
+    client = OnleiheClient(
+        host="example.invalid",
+        onleihe_id="onleihe-id",
+        library_id="library-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(OnleiheAuthError) as exc_info:
+        client.login("user", "wrong-password")
+
+    assert exc_info.value.status_code == 401
 
 
 def test_parse_job_status_keeps_api_error():

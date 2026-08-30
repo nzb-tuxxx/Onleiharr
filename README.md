@@ -73,6 +73,8 @@ pipx inject onleiharr playwright
 
 The watcher refreshes the cached Onleihe session automatically and atomically persists every renewed token. If the session can no longer be refreshed, Onleiharr sends an Apprise notification containing the exact `onleiharr --login -c ...` and systemd restart commands, then exits with an authentication error.
 
+For UPA libraries, the watcher instead attempts one fresh login and immediately retries the interrupted poll cycle. If that login or the retried cycle fails authentication again, Onleiharr exits with an authentication error so a user systemd unit can apply its `Restart=on-failure` policy. A successful full poll cycle resets this one-attempt recovery allowance.
+
 Default config path:
 - Linux: `~/.config/onleiharr/onleiharr.toml`
 - macOS: `~/Library/Application Support/onleiharr/onleiharr.toml`

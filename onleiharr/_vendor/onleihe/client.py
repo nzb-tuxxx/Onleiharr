@@ -221,7 +221,7 @@ class OnleiheClient:
             "openIdCode": code,
             "openIdRedirectURL": redirect_url,
         }
-        data = self._post("/user-application/v1/auth/login", json=payload, auth=False)
+        data = self._post_auth("/user-application/v1/auth/login", json=payload)
         self.session = parse_session(data)
         self.onleihe_id = self.session.onleihe_id or payload["onleiheId"]
         self.library_id = self.session.library_id or payload["libraryId"]
@@ -257,7 +257,7 @@ class OnleiheClient:
                     "libraryId": self._library_id(),
                 }
             )
-        data = self._post("/user-application/v1/auth/login", json=payload)
+        data = self._post_auth("/user-application/v1/auth/login", json=payload)
         self.session = parse_session(data, username=username)
         self.onleihe_id = self.session.onleihe_id or payload["onleiheId"]
         self.library_id = self.session.library_id or self.library_id
@@ -268,7 +268,7 @@ class OnleiheClient:
         token = self.session.refresh_token or self.session.access_token
         if not token:
             raise OnleiheAuthError("Cannot refresh without a token")
-        data = self._post("/user-application/v1/auth/refresh", json={"token": token}, auth=False)
+        data = self._post_auth("/user-application/v1/auth/refresh", json={"token": token})
         previous = self.session
         self.session = parse_session(data, username=previous.username)
         self.session.refresh_token = self.session.refresh_token or previous.refresh_token
@@ -768,6 +768,18 @@ class OnleiheClient:
         if not response.content:
             return {}
         return self._json(response)
+
+    def _post_auth(self, path: str, *, json: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._post(path, json=json, auth=False)
+        except OnleiheAPIError as exc:
+            if exc.status_code not in {401, 403} or isinstance(exc, OnleiheAuthError):
+                raise
+            raise OnleiheAuthError(
+                str(exc),
+                status_code=exc.status_code,
+                payload=exc.payload,
+            ) from exc
 
     def _delete(
         self,
