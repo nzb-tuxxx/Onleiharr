@@ -78,6 +78,8 @@ def test_build_config_text_writes_product_and_category_watches(tmp_path):
     assert config.general.watch_product_ids == ["product-1"]
     assert config.general.watch_categories[0].category_ids == ["cat-1"]
     assert config.general.watch_categories[0].keywords == ["python"]
+    assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
+    assert '# Alternative: sort_field = "publicationDate"' in text
 
 
 def test_normalize_host_accepts_urls_and_hosts():

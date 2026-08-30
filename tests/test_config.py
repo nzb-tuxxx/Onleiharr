@@ -56,6 +56,8 @@ def test_ensure_default_config_uses_private_permissions(tmp_path: Path):
         os.umask(previous_umask)
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    config = load_config(path, env={})
+    assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
 
 
 def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp_path: Path):
@@ -65,6 +67,7 @@ def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp
     assert len(config.general.watch_categories) == 1
     assert config.general.watch_categories[0].category_ids == ["cat-1", "cat-2"]
     assert config.general.watch_categories[0].keywords == ["python"]
+    assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
     assert config.credentials.host == "niedersachsen.onleihe.de"
     assert config.credentials.onleihe_name == "Onleihe Niedersachsen"
     assert config.credentials.library_name == "Stadtbibliothek Achim"
@@ -167,7 +170,7 @@ def test_extract_category_ids_from_url_decodes_browser_categories():
 def test_load_config_derives_media_type_and_sort_from_category_url(tmp_path: Path):
     body = base_config().replace(
         "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%2C%22cat-1%22%5D",
-        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%5D&mediaType=E_BOOK%2CE_AUDIO&language=ger&authors_fullName=Ada&publisher.name=Pub&rating.value=4&licence.isAvailable=true&sortField=licence.stockChangedTimestamp&sortType=ascending",
+        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%5D&mediaType=E_BOOK%2CE_AUDIO&language=ger&authors_fullName=Ada&publisher.name=Pub&rating.value=4&licence.isAvailable=true&sortField=publicationDate&sortType=ascending",
     )
 
     config = load_config(write_config(tmp_path, body))
@@ -181,8 +184,22 @@ def test_load_config_derives_media_type_and_sort_from_category_url(tmp_path: Pat
         {"field": "rating.value", "values": ["4"]},
         {"field": "licence.isAvailable", "values": ["true"]},
     ]
-    assert watch.sort_field == "licence.stockChangedTimestamp"
+    assert watch.sort_field == "publicationDate"
     assert watch.sort_order == "DESC"
+
+
+def test_explicit_category_sort_field_overrides_url(tmp_path: Path):
+    body = base_config().replace(
+        'keywords = ["python"]',
+        'sort_field = "licence.stockChangedTimestamp"\nkeywords = ["python"]',
+    ).replace(
+        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%2C%22cat-1%22%5D",
+        "https://niedersachsen.onleihe.de/search?categories=%5B%22cat-2%22%5D&sortField=publicationDate",
+    )
+
+    config = load_config(write_config(tmp_path, body))
+
+    assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
 
 
 def test_category_watch_requires_keywords(tmp_path: Path):

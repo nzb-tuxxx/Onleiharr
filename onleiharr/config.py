@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 DEFAULT_FILENAME = "onleiharr.toml"
+DEFAULT_CATEGORY_SORT_FIELD = "licence.stockChangedTimestamp"
 
 
 @dataclass
@@ -41,7 +42,7 @@ class WatchCategory:
     description: str | None = None
     media_types: list[str] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
-    sort_field: str = "publicationDate"
+    sort_field: str = DEFAULT_CATEGORY_SORT_FIELD
     sort_order: str = "DESC"
 
 
@@ -171,6 +172,8 @@ category_ids = [
 category_urls = [
   # "https://niedersachsen.onleihe.de/search?categories=%5B%2265afa17e40246d5939bdbb53%22%5D",
 ]
+sort_field = "licence.stockChangedTimestamp"  # Recommended: newest Onleihe stock changes first.
+# Alternative: sort_field = "publicationDate"  # Newest bibliographic publication dates first.
 keywords = [
   "keyword fragment one",
   "keyword fragment two",
@@ -317,13 +320,14 @@ def _load_watch_categories(raw_categories: Any) -> list[WatchCategory]:
         extracted_ids: list[str] = []
         media_types = _string_list(raw.get("media_types"))
         filters = _dict_list(raw.get("filters"))
-        sort_field = _optional_str(raw.get("sort_field")) or "publicationDate"
+        configured_sort_field = _optional_str(raw.get("sort_field"))
+        sort_field = configured_sort_field or DEFAULT_CATEGORY_SORT_FIELD
         for url in category_urls:
             extracted_ids.extend(extract_category_ids_from_url(url))
             options = extract_category_options_from_url(url)
             media_types.extend(options.media_types)
             filters.extend(options.filters)
-            if options.sort_field:
+            if options.sort_field and configured_sort_field is None:
                 sort_field = options.sort_field
         merged_ids = _dedupe([*category_ids, *extracted_ids])
         if not merged_ids:

@@ -128,7 +128,14 @@ def build_config_text(config: WizardConfig) -> str:
         )
         for url in watch.get("category_urls", []):
             lines.append(f"  {_toml_string(str(url))},")
-        lines.extend(["]", "keywords = ["])
+        lines.extend(
+            [
+                "]",
+                'sort_field = "licence.stockChangedTimestamp"  # Recommended: newest Onleihe stock changes first.',
+                '# Alternative: sort_field = "publicationDate"  # Newest bibliographic publication dates first.',
+                "keywords = [",
+            ]
+        )
         for keyword in watch.get("keywords", []):
             lines.append(f"  {_toml_string(str(keyword))},")
         lines.extend(["]", ""])

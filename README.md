@@ -98,6 +98,8 @@ category_ids = [
 category_urls = [
   "https://niedersachsen.onleihe.de/search?categories=%5B%2265afa17e40246d5939bdbb53%22%5D",
 ]
+sort_field = "licence.stockChangedTimestamp"  # Recommended: newest Onleihe stock changes first.
+# Alternative: sort_field = "publicationDate"  # Newest bibliographic publication dates first.
 keywords = ["python", "meinHobby"]
 
 [notification]
@@ -133,6 +135,7 @@ For an external-login library, the wizard writes `auth_type = "open_id"` and `se
 Behavior:
 - `watch_product_ids` are direct product or series watches and do not use keyword filtering.
 - `watch_categories` combine `category_ids` and IDs extracted from `category_urls`, then search newest media first with a fixed page size of 50.
+- Category watches default to `sort_field = "licence.stockChangedTimestamp"` because it puts recent Onleihe licence-stock additions or changes first, including older publications newly added to the catalogue. Put it directly in the corresponding `[[watch_categories]]` table, alongside `category_urls` and `keywords`, as shown above. The alternative `sort_field = "publicationDate"` follows the title's bibliographic publication date. An explicit `sort_field` takes precedence over a `sortField` imported from a category URL. Category-watch sorting is always descending.
 - Category watches only act on media whose title, subtitle, or authors match their `keywords`.
 - If `lendings_poll_interval_secs` is greater than `0`, the my-media poller downloads newly discovered lendings that were not primed at startup. Set it to `0` to disable this feature.
 - Notification targets are optional. Without Apprise URLs/config, Onleiharr logs notification skips and keeps watching/downloading.
