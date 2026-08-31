@@ -37,13 +37,13 @@ Build / Run / Lint / Test Commands
 
 Configuration Expectations
 - `onleiharr.toml` must define:
-  - [general]: poll_interval_secs, watch_product_ids (optional list).
+  - [general]: poll_interval_secs, watch_product_ids (optional list), and keyword_match_mode (`contains` or `word_start`, optional).
   - [[watch_categories]]: category_ids/category_urls plus keywords for each category watch.
   - [notification]: urls list or apprise_config_path optional; test_notification; email optional.
   - [credentials]: host, auth_type, onleihe_name or onleihe_id, and library_name or library_id; UPA also needs username/password, while OpenID uses a persisted session_path.
 - Env overrides: `ONLEIHARR_CONFIG`, `ONLEIHARR_USERNAME`, `ONLEIHARR_PASSWORD`, `ONLEIHARR_HOST`, `ONLEIHARR_ONLEIHE_NAME`, `ONLEIHARR_ONLEIHE_ID`, `ONLEIHARR_LIBRARY_NAME`, `ONLEIHARR_LIBRARY_ID`, `ONLEIHARR_AUTH_TYPE`, `ONLEIHARR_SESSION_PATH`, `ONLEIHARR_WATCH_PRODUCT_IDS`, `ONLEIHARR_EMAIL`, `ONLEIHARR_APPRISE_URLS`, `ONLEIHARR_APPRISE_CONFIG`, `ONLEIHARR_POLL_INTERVAL`, `ONLEIHARR_TEST_NOTIFICATION`, and the `ONLEIHARR_GOUROU_*` variables.
 - `watch_product_ids` are explicit product/series watches and do not use keyword checks.
-- `watch_categories` use the vendored API to resolve category tree element ids to API search queries, then filter by keywords.
+- `watch_categories` use the vendored API to resolve category tree element ids to API search queries, then filter by keywords according to the global keyword_match_mode.
 - Do not add backward compatibility for old Onleihe v1/v2 frontend URLs unless explicitly requested.
 
 Runtime Behaviors to Preserve

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -37,6 +38,9 @@ from onleiharr.auth import (
 from onleiharr.config import (
     AppConfig,
     ConfigError,
+    DEFAULT_KEYWORD_MATCH_MODE,
+    KEYWORD_MATCH_CONTAINS,
+    KEYWORD_MATCH_WORD_START,
     WatchCategory,
     default_config_path,
     load_config,
@@ -294,17 +298,40 @@ def recover_invalid_config_or_exit(path: Path, exc: ConfigError, *, allow_wizard
     return True
 
 
-def matches_filter(media: WatchedMedia | MediaItem, filters: Iterable[str]) -> bool:
-    haystack = " ".join(
-        part
-        for part in [
-            getattr(media, "title", None),
-            getattr(media, "subtitle", None),
-            " ".join(getattr(media, "authors", []) or []),
-        ]
-        if part
-    ).lower()
-    return any(entry.lower() in haystack for entry in filters)
+def matches_filter(
+    media: WatchedMedia | MediaItem,
+    filters: Iterable[str],
+    *,
+    mode: str = DEFAULT_KEYWORD_MATCH_MODE,
+) -> bool:
+    fields = [
+        getattr(media, "title", None),
+        getattr(media, "subtitle", None),
+        " ".join(getattr(media, "authors", []) or []),
+    ]
+    entries = [entry for entry in filters if entry]
+    if mode == KEYWORD_MATCH_CONTAINS:
+        haystack = " ".join(str(field) for field in fields if field).lower()
+        return any(entry.lower() in haystack for entry in entries)
+    if mode != KEYWORD_MATCH_WORD_START:
+        raise ValueError(f"Unsupported keyword match mode: {mode}")
+
+    keywords = [entry.casefold() for entry in entries]
+    for field in fields:
+        if not field:
+            continue
+        haystack = str(field).casefold()
+        for keyword in keywords:
+            start = haystack.find(keyword)
+            while start >= 0:
+                if start == 0 or not _is_keyword_word_character(haystack[start - 1]):
+                    return True
+                start = haystack.find(keyword, start + 1)
+    return False
+
+
+def _is_keyword_word_character(character: str) -> bool:
+    return character.isalnum() or unicodedata.category(character).startswith("M")
 
 
 def build_apprise(config: AppConfig) -> apprise.Apprise | None:
@@ -643,6 +670,7 @@ def fetch_category_watch_media(
     watch: WatchCategory,
     *,
     source: str | None = None,
+    keyword_match_mode: str = DEFAULT_KEYWORD_MATCH_MODE,
 ) -> CategoryWatchResult:
     body = client.build_category_search_body(
         watch.category_ids,
@@ -659,7 +687,7 @@ def fetch_category_watch_media(
     source = source or f"category:{watch.description or ','.join(watch.category_ids[:2])}"
     total = len(result.items)
     for item in result.items:
-        keyword_matched = matches_filter(item, watch.keywords)
+        keyword_matched = matches_filter(item, watch.keywords, mode=keyword_match_mode)
         if not keyword_matched:
             continue
         converted = media_from_item(
@@ -742,7 +770,16 @@ def fetch_all_watched_media(
         label = watch.description or ",".join(watch.category_ids[:2])
         source = f"category:{index}:{label}"
         try:
-            category_result = fetch_category_watch_media(client, watch, source=source)
+            category_result = fetch_category_watch_media(
+                client,
+                watch,
+                source=source,
+                keyword_match_mode=getattr(
+                    config.general,
+                    "keyword_match_mode",
+                    DEFAULT_KEYWORD_MATCH_MODE,
+                ),
+            )
             successful_sources.add(source)
             if log_summary:
                 logger.info(

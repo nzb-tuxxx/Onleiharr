@@ -478,6 +478,42 @@ def test_category_watch_filters_by_keywords():
     ]
 
 
+def test_fetch_all_watched_media_uses_global_keyword_match_mode():
+    class Client(FakeClient):
+        def search_media(self, *, raw_body, require_login: bool = False) -> SearchResultPage:
+            return SearchResultPage(
+                items=[
+                    MediaItem(
+                        id="false-positive",
+                        product_id="false-positive",
+                        title="ICH-POWER",
+                        subtitle="Wie du sie für dich entfaltest",
+                        media_type="E_BOOK",
+                    ),
+                    MediaItem(
+                        id="match",
+                        product_id="match",
+                        title="Test automation",
+                        subtitle=None,
+                        media_type="E_BOOK",
+                    ),
+                ]
+            )
+
+    watch = WatchCategory(category_ids=["cat-1", "cat-2"], keywords=["test"])
+    config = SimpleNamespace(
+        general=SimpleNamespace(
+            watch_product_ids=[],
+            watch_categories=[watch],
+            keyword_match_mode="word_start",
+        )
+    )
+
+    result = fetch_all_watched_media(Client(), config)  # type: ignore[arg-type]
+
+    assert [item.product_id for item in result.media] == ["match"]
+
+
 def test_fetch_all_watched_media_reports_target_errors():
     class Client(FakeClient):
         def get_product(self, product_id: str, *, include_user_context: bool = True) -> ProductDetails:
@@ -1073,6 +1109,51 @@ def test_matches_filter_uses_title_subtitle_and_authors():
     assert matches_filter(item, ["ada"])
     assert matches_filter(item, ["praxis"])
     assert not matches_filter(item, ["python"])
+
+
+@pytest.mark.parametrize(
+    ("title", "subtitle", "keyword"),
+    [
+        ("111 Orte", "komplett überarbeitete Neuauflage", "arbeit"),
+        ("ICH-POWER", "Wie du sie für dich entfaltest", "test"),
+        ("African Comfort Food", "Authentisches Streetfood", "etf"),
+        ("cafe\N{COMBINING ACUTE ACCENT}test", None, "test"),
+        ("İtest", None, "test"),
+    ],
+)
+def test_word_start_mode_rejects_keyword_inside_word(title, subtitle, keyword):
+    item = MediaItem(
+        id="book-1",
+        product_id="book-1",
+        title=title,
+        subtitle=subtitle,
+        media_type="E_BOOK",
+    )
+
+    assert matches_filter(item, [keyword], mode="contains")
+    assert not matches_filter(item, [keyword], mode="word_start")
+
+
+@pytest.mark.parametrize(
+    ("title", "keyword"),
+    [
+        ("Finanzen verstehen", "finanz"),
+        ("Arbeitsrecht kompakt", "arbeit"),
+        ("ETF-Sparplan", "etf"),
+        ("Mein_ETF_Sparplan", "etf"),
+        ("VERMÖGEN aufbauen", "vermögen"),
+    ],
+)
+def test_word_start_mode_matches_prefixes_after_separators(title, keyword):
+    item = MediaItem(
+        id="book-1",
+        product_id="book-1",
+        title=title,
+        subtitle=None,
+        media_type="E_BOOK",
+    )
+
+    assert matches_filter(item, [keyword], mode="word_start")
 
 
 def test_available_media_reserves_when_lend_fails_because_unavailable():

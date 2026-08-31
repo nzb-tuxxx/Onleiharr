@@ -8,6 +8,8 @@ import pytest
 
 from onleiharr.config import (
     ConfigError,
+    KEYWORD_MATCH_CONTAINS,
+    KEYWORD_MATCH_WORD_START,
     ensure_default_config,
     extract_category_ids_from_url,
     load_config,
@@ -58,6 +60,7 @@ def test_ensure_default_config_uses_private_permissions(tmp_path: Path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     config = load_config(path, env={})
     assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
+    assert config.general.keyword_match_mode == KEYWORD_MATCH_WORD_START
 
 
 def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp_path: Path):
@@ -68,10 +71,33 @@ def test_load_config_supports_product_ids_category_urls_and_name_credentials(tmp
     assert config.general.watch_categories[0].category_ids == ["cat-1", "cat-2"]
     assert config.general.watch_categories[0].keywords == ["python"]
     assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
+    assert config.general.keyword_match_mode == KEYWORD_MATCH_CONTAINS
     assert config.credentials.host == "niedersachsen.onleihe.de"
     assert config.credentials.onleihe_name == "Onleihe Niedersachsen"
     assert config.credentials.library_name == "Stadtbibliothek Achim"
     assert config.gourou.download_permissions == 0o644
+
+
+@pytest.mark.parametrize("mode", [KEYWORD_MATCH_CONTAINS, KEYWORD_MATCH_WORD_START])
+def test_load_config_accepts_keyword_match_modes(tmp_path: Path, mode: str):
+    body = base_config().replace(
+        "poll_interval_secs = 300.0",
+        f'poll_interval_secs = 300.0\nkeyword_match_mode = "{mode}"',
+    )
+
+    config = load_config(write_config(tmp_path, body), env={})
+
+    assert config.general.keyword_match_mode == mode
+
+
+def test_load_config_rejects_invalid_keyword_match_mode(tmp_path: Path):
+    body = base_config().replace(
+        "poll_interval_secs = 300.0",
+        'poll_interval_secs = 300.0\nkeyword_match_mode = "whole_word"',
+    )
+
+    with pytest.raises(ConfigError, match="general.keyword_match_mode"):
+        load_config(write_config(tmp_path, body), env={})
 
 
 def test_gourou_download_permissions_can_be_overridden_by_config(tmp_path: Path):

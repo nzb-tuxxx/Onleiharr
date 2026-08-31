@@ -86,6 +86,7 @@ CLI/env precedence for config path: `-c/--config` > `ONLEIHARR_CONFIG` > OS defa
 ```toml
 [general]
 poll_interval_secs = 300.0
+keyword_match_mode = "word_start"
 watch_product_ids = [
   "69b3ed6bc56755bf97cb3b9a", # product or magazine series
   "69fcc1817003d0749a67b48d",
@@ -138,7 +139,7 @@ Behavior:
 - `watch_product_ids` are direct product or series watches and do not use keyword filtering.
 - `watch_categories` combine `category_ids` and IDs extracted from `category_urls`, then search newest media first with a fixed page size of 50.
 - Category watches default to `sort_field = "licence.stockChangedTimestamp"` because it puts recent Onleihe licence-stock additions or changes first, including older publications newly added to the catalogue. Put it directly in the corresponding `[[watch_categories]]` table, alongside `category_urls` and `keywords`, as shown above. The alternative `sort_field = "publicationDate"` follows the title's bibliographic publication date. An explicit `sort_field` takes precedence over a `sortField` imported from a category URL. Category-watch sorting is always descending.
-- Category watches only act on media whose title, subtitle, or authors match their `keywords`.
+- Category watches only act on media whose title, subtitle, or authors match their `keywords`. `keyword_match_mode = "word_start"` matches at the start of a field or after a separator (including spaces, `_`, `-`, and punctuation), so stems such as `finanz` still match `Finanzen` without matching the middle of unrelated words. Existing configs without this setting use the legacy `contains` mode.
 - If `lendings_poll_interval_secs` is greater than `0`, the my-media poller downloads newly discovered lendings that were not primed at startup. Set it to `0` to disable this feature.
 - Notification targets are optional. Without Apprise URLs/config, Onleiharr logs notification skips and keeps watching/downloading.
 - Credentials can use names by default; IDs are optional exact overrides.

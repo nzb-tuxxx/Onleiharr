@@ -17,7 +17,7 @@ from onleiharr._vendor.onleihe import (
     SessionState,
 )
 from onleiharr.auth import default_session_path, external_login_manual, save_session
-from onleiharr.config import ensure_default_config
+from onleiharr.config import KEYWORD_MATCH_WORD_START, ensure_default_config
 
 try:
     import curses
@@ -58,6 +58,7 @@ class WizardConfig:
     test_notification: bool = False
     email: str = ""
     poll_interval_secs: float = 300.0
+    keyword_match_mode: str = KEYWORD_MATCH_WORD_START
     download_dir: str = "~/Downloads/Onleiharr"
     lendings_poll_interval_secs: float = 21600.0
     lendings_notify: bool = True
@@ -112,6 +113,7 @@ def build_config_text(config: WizardConfig) -> str:
         "",
         "[general]",
         f"poll_interval_secs = {float(config.poll_interval_secs):.1f}",
+        f"keyword_match_mode = {_toml_string(config.keyword_match_mode)}",
         "watch_product_ids = [",
     ]
     for product_id in config.watch_product_ids:

@@ -79,6 +79,8 @@ def test_build_config_text_writes_product_and_category_watches(tmp_path):
     assert config.general.watch_categories[0].category_ids == ["cat-1"]
     assert config.general.watch_categories[0].keywords == ["python"]
     assert config.general.watch_categories[0].sort_field == "licence.stockChangedTimestamp"
+    assert config.general.keyword_match_mode == "word_start"
+    assert 'keyword_match_mode = "word_start"' in text
     assert '# Alternative: sort_field = "publicationDate"' in text
 
 

@@ -19,6 +19,10 @@ except ModuleNotFoundError:  # pragma: no cover
 
 DEFAULT_FILENAME = "onleiharr.toml"
 DEFAULT_CATEGORY_SORT_FIELD = "licence.stockChangedTimestamp"
+KEYWORD_MATCH_CONTAINS = "contains"
+KEYWORD_MATCH_WORD_START = "word_start"
+DEFAULT_KEYWORD_MATCH_MODE = KEYWORD_MATCH_CONTAINS
+KEYWORD_MATCH_MODES = frozenset({KEYWORD_MATCH_CONTAINS, KEYWORD_MATCH_WORD_START})
 
 
 @dataclass
@@ -72,6 +76,7 @@ class GeneralConfig:
     poll_interval_secs: float
     watch_product_ids: list[str]
     watch_categories: list[WatchCategory]
+    keyword_match_mode: str = DEFAULT_KEYWORD_MATCH_MODE
 
 
 @dataclass
@@ -89,7 +94,7 @@ class ConfigError(Exception):
 
 TOP_LEVEL_KEYS = {"general", "watch_categories", "notification", "credentials", "gourou"}
 SECTION_KEYS = {
-    "general": {"poll_interval_secs", "watch_product_ids"},
+    "general": {"poll_interval_secs", "watch_product_ids", "keyword_match_mode"},
     "notification": {"urls", "apprise_config_path", "test_notification", "email"},
     "credentials": {
         "username",
@@ -159,6 +164,7 @@ def _default_template() -> str:
 
 [general]
 poll_interval_secs = 300.0
+keyword_match_mode = "word_start"
 watch_product_ids = [
   "69b3ed6bc56755bf97cb3b9a", # example: magazine/product series
 ]
@@ -228,6 +234,14 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
         if poll_interval_env is not None
         else float(general_section.get("poll_interval_secs", 300.0))
     )
+    keyword_match_mode = str(
+        general_section.get("keyword_match_mode", DEFAULT_KEYWORD_MATCH_MODE)
+    ).strip()
+    if keyword_match_mode not in KEYWORD_MATCH_MODES:
+        choices = ", ".join(sorted(KEYWORD_MATCH_MODES))
+        raise ConfigError(
+            f"Invalid general.keyword_match_mode={keyword_match_mode!r}; expected one of: {choices}."
+        )
 
     watch_product_ids = _dedupe(_env_list(environ.get("ONLEIHARR_WATCH_PRODUCT_IDS"))
                                 or _string_list(general_section.get("watch_product_ids")))
@@ -255,6 +269,7 @@ def load_config(path: Path, env: os._Environ[str] | None = None) -> AppConfig:
             poll_interval_secs=float(poll_interval),
             watch_product_ids=watch_product_ids,
             watch_categories=watch_categories,
+            keyword_match_mode=keyword_match_mode,
         ),
         notification=NotificationConfig(
             urls=apprise_urls,
